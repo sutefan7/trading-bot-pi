@@ -1,0 +1,186 @@
+# Trading Bot v4 Configuration - PRODUCTION
+# =============================
+
+# Trading pairs en timeframes
+trading:
+  symbols: ["ETH-USD","SOL-USD","ADA-USD","XRP-USD","LINK-USD"]  # alt-universum
+  timeframes: ["1h", "4h", "1d"]
+  primary_timeframe: "1h"
+  universe:
+    rebalance_frequency: "weekly"          # herselectie frequentie
+    max_assets: 5                           # top-N te handelen
+    min_30d_volume_usd: 5000000            # liquiditeitsfilter
+    max_pair_correlation: 0.7              # diversificatie
+    momentum_lookbacks: [30, 90]           # ROC periodes
+
+# Portfolio instellingen
+portfolio:
+  base_currency: "EUR"                     # Base currency voor portfolio
+  initial_balance: 1000.0                  # Startkapitaal in EUR
+  rebalance_threshold: 0.05                # 5% drift voor rebalancing
+  fx_source: "kraken"                      # FX data source (kraken, ecb, default)
+  
+# API instellingen
+api:
+  kraken:
+    dry_run: false  # PRODUCTION: Kraken live trading
+    rate_limit: 1.0  # Seconden tussen API calls
+  
+# Regime filter instellingen
+regime:
+  anchor_symbol: "BTC-USD"
+  timeframe: "1d"
+  sma_long: 200
+  adx_period: 14
+  adx_min: 20
+  vol_norm_window: 14                       # voor ATR/Close
+  vol_min: 0.02                             # 2%
+  vol_max: 0.08                             # 8%
+
+# Strategie instellingen
+strategies:
+  enabled: ["trend_follow","mean_revert","breakout"]
+  trend_follow:
+    ema_short: 20
+    ema_long: 50
+    rsi_period: 14
+    rsi_entry_min: 40
+    macd_fast: 12
+    macd_slow: 26
+    macd_signal: 9
+    atr_mult_stop: 2.0
+    atr_mult_trail: 1.5
+  mean_revert:
+    bb_period: 20
+    bb_std: 2.0
+    rsi_period: 14
+    rsi_oversold: 30
+    tp_rr: 1.5
+  breakout:
+    bb_period: 20
+    bb_width_q: 0.25        # onderste kwartiel
+    lookback_bars: 20
+    volume_uptick_mult: 1.3
+    atr_mult_trail: 2.0
+
+# Machine Learning instellingen
+ml:
+  model_types: ["xgboost", "lightgbm", "random_forest"]  # Model types, not symbols
+  symbols: ["SOL-USD", "ETH-USD", "AVAX-USD"]  # Trading pairs for ML
+  confidence_threshold: 0.65
+  retrain_frequency_days: 30
+  walk_forward_windows: 4
+  feature_selection: false
+  enabled: true
+
+# ML Overlay instellingen
+ml_overlay:
+  enabled: true
+  mode: "live"  # PRODUCTION: live mode (was shadow)
+  min_confidence_global: 0.55
+  per_pair_thresholds: true
+  daily_loss_cap: 0.05  # 5% max daily loss
+  max_failures: 3
+  cooldown_minutes: 30
+  artifacts_dir: "artifacts"
+  latest_file: "artifacts/latest.txt"
+  
+# Technische indicatoren
+indicators:
+  rsi:
+    period: 14
+    oversold: 30
+    overbought: 70
+  
+  macd:
+    fast_period: 12
+    slow_period: 26
+    signal_period: 9
+  
+  bollinger_bands:
+    period: 20
+    std_dev: 2.0
+  
+  moving_averages:
+    sma_short: 10
+    sma_medium: 50
+    sma_long: 200
+    ema_short: 12
+    ema_long: 26
+  
+  adx:
+    period: 14
+    threshold_low: 20
+    threshold_high: 25
+  
+  atr:
+    period: 14
+
+# Risicomanagement
+risk:
+  per_trade_risk_pct: 0.0075   # 0.75% van actief kapitaal
+  daily_loss_cap_pct: 0.04     # 4% dagelijks verlies limiet
+  max_open_positions: 3        # max aantal open posities
+  trailing_stop_pct: 0.03      # 3% trailing stop
+  
+# Backtesting
+backtest:
+  start_date: "2023-01-01"
+  end_date: "2024-12-31"
+  transaction_fee: 0.001  # 0.1% per trade
+  slippage: 0.0005  # 0.05% slippage
+  
+# Live trading - PRODUCTION
+live:
+  enabled: true
+  paper_trading: false  # PRODUCTION: real trading
+  max_open_positions: 3
+  cooldown_bars: 12  # Uren tussen trades
+  
+# Logging en monitoring
+logging:
+  level: "INFO"
+  file_rotation: "1 day"
+  max_file_size: "10 MB"
+  telegram_notifications: true  # PRODUCTION: enable notifications
+
+# Data export instellingen
+data_export:
+  disable_parquet_export: false  # Set to true to disable parquet export (fallback to CSV/NDJSON)
+  parquet_compression: "snappy"   # Compression for parquet files
+  csv_backup: true                # Always keep CSV backup
+  ndjson_backup: true             # Always keep NDJSON backup
+  
+# Performance tracking
+performance:
+  benchmark: "BTC-USD"
+  metrics:
+    - "sharpe_ratio"
+    - "sortino_ratio"
+    - "calmar_ratio"
+    - "max_drawdown"
+    - "win_rate"
+    - "profit_factor"
+  
+# Notificaties - PRODUCTION
+notifications:
+  telegram:
+    enabled: true  # PRODUCTION: enable notifications
+    # Credentials should be set via environment variables:
+    # export TELEGRAM_BOT_TOKEN="your_bot_token"
+    # export TELEGRAM_CHAT_ID="your_chat_id"
+    bot_token: ""  # Will be loaded from TELEGRAM_BOT_TOKEN env var
+    chat_id: ""    # Will be loaded from TELEGRAM_CHAT_ID env var
+  
+  email:
+    enabled: false
+    smtp_server: ""
+    smtp_port: 587
+    username: ""
+    password: ""
+    recipients: []
+
+
+
+
+

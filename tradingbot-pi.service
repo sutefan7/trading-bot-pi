@@ -1,0 +1,50 @@
+[Unit]
+Description=TradingBotV4 - Advanced Crypto Trading Bot (Pi)
+Documentation=https://github.com/sutefan7/trading-bot-v4
+After=network-online.target
+Wants=network-online.target
+StartLimitInterval=300
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=stephang
+Group=stephang
+WorkingDirectory=/home/stephang/trading-bot-v4
+
+# Health check before start (quote URL correct)
+ExecStartPre=/bin/bash -lc 'python3 - <<PY\nimport requests\nrequests.get("https://api.kraken.com/0/public/Time", timeout=5)\nprint("Kraken OK")\nPY'
+ExecStartPre=/bin/bash -c 'test -f /home/stephang/trading-bot-v4/.env'
+ExecStartPre=/bin/bash -c 'test -f /home/stephang/trading-bot-v4/storage/artifacts/latest.txt'
+ExecStartPre=/bin/bash -c 'cd /home/stephang/trading-bot-v4 && source venv-light/bin/activate && python smoke_test.py'
+
+# Main service (ML-enabled)
+ExecStart=/bin/bash -lc 'source venv-light/bin/activate && PYTHONPATH=/home/stephang/trading-bot-v4 python3 src/apps/runner/main_v2_with_ml.py --non-interactive'
+
+# Restart policy with limits
+Restart=on-failure
+RestartSec=10
+StartLimitInterval=300
+StartLimitBurst=3
+
+# Environment
+Environment="PYTHONUNBUFFERED=1"
+Environment="PYTHONPATH=/home/stephang/trading-bot-v4"
+Environment="TRADING_BOT_ENV=production"
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tradingbot-pi
+
+# Resource limits
+MemoryMax=2G
+CPUQuota=80%
+TasksMax=1000
+
+# Watchdog
+WatchdogSec=60
+
+[Install]
+WantedBy=multi-user.target
+

@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+venv-light/
+*.log
+storage/artifacts/
+storage/models/
+storage/logs/
+data/
+*.parquet
+*.csv
+.DS_Store
+.idea/
+.vscode/
