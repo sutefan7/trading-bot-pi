@@ -1,15 +1,144 @@
+# ============================================
+# TRADING BOT PI - GITHUB .GITIGNORE
+# ============================================
+
+# ===== SECRETS & CREDENTIALS (CRITICAL!) =====
+# NEVER commit these files:
+*.env
+.env*
+secrets.yaml
+secrets.enc
+encryption.key
+*.key
+*.pem
+*.p12
+*.pfx
+credentials.json
+auth_token*
+
+# API Keys and configuration with sensitive data
+config.production.yaml
+config.local.yaml
+*-production.yaml
+*-local.yaml
+
+# ===== PYTHON =====
 __pycache__/
-*.pyc
-.venv/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environments
 venv/
-venv-light/
-*.log
+venv-*/
+ENV/
+env/
+.venv
+
+# ===== DATA & MODELS =====
+# Model artifacts (too large for git, use Git LFS or external storage)
 storage/artifacts/
 storage/models/
-storage/logs/
+storage/checkpoints/
+*.onnx
+*.pkl
+*.joblib
+*.h5
+*.pb
+*.pth
+
+# Training data (too large)
 data/
+datasets/
 *.parquet
 *.csv
+*.json.gz
+*.feather
+
+# Trading logs and cache
+storage/logs/
+storage/cache/
+storage/reports/
+logs/
+*.log
+*.log.*
+
+# Trade history (contains sensitive financial data)
+storage/trades/
+storage/positions/
+storage/backtest_results/
+
+# ===== SYSTEM & IDE =====
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDEs
 .idea/
 .vscode/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+
+# OS
+*.pid
+*.lock
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# ===== TESTING & COVERAGE =====
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+htmlcov/
+
+# ===== TEMP & MISC =====
+tmp/
+temp/
+*.tmp
+*.bak
+*.backup
+*.orig
+.scratch/
+
+# ===== KEEP STRUCTURE =====
+# But allow .gitkeep files to maintain directory structure
+!.gitkeep
+!storage/.gitkeep
+!logs/.gitkeep

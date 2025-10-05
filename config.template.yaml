@@ -1,0 +1,161 @@
+# ============================================
+# TRADING BOT PI - CONFIGURATION TEMPLATE
+# ============================================
+# 
+# IMPORTANT: Copy this file to config.yaml and customize with your settings.
+# DO NOT commit config.yaml or config.production.yaml to git!
+#
+# Usage:
+#   cp config.template.yaml config.yaml
+#   # Edit config.yaml with your settings
+#
+# ============================================
+
+trading:
+  symbols:
+  - BTC-USD
+  - ETH-USD
+  # Add more symbols as needed
+  
+  timeframes:
+  - 1h
+  - 4h
+  - 1d
+  
+  primary_timeframe: 1h
+  
+  universe:
+    rebalance_frequency: weekly
+    max_assets: 5
+    min_30d_volume_usd: 5000000
+    max_pair_correlation: 0.7
+    momentum_lookbacks:
+    - 30
+    - 90
+
+portfolio:
+  base_currency: EUR
+  initial_balance: 1000.0  # CHANGE THIS to your actual balance
+  rebalance_threshold: 0.05
+  fx_source: kraken
+
+api:
+  kraken:
+    dry_run: true  # IMPORTANT: Set to false only when ready for live trading
+    rate_limit: 1.0
+    # API credentials should be set via environment variables:
+    # KRAKEN_API_KEY=your_key_here
+    # KRAKEN_API_SECRET=your_secret_here
+    # KRAKEN_SANDBOX=true  # Set to false for live trading
+
+regime:
+  anchor_symbol: BTC-USD
+  timeframe: 1d
+  sma_long: 200
+  adx_period: 14
+  adx_min: 15
+  vol_norm_window: 14
+  vol_min: 0.02
+  vol_max: 0.08
+
+strategies:
+  enabled:
+  - trend_follow
+  - mean_revert
+  - breakout
+  
+  trend_follow:
+    ema_short: 20
+    ema_long: 50
+    rsi_period: 14
+    rsi_entry_min: 40
+    macd_fast: 12
+    macd_slow: 26
+    macd_signal: 9
+    atr_mult_stop: 2.0
+    atr_mult_trail: 1.5
+  
+  mean_revert:
+    bb_period: 20
+    bb_std: 2.0
+    rsi_period: 14
+    rsi_oversold: 30
+    tp_rr: 1.5
+  
+  breakout:
+    bb_period: 20
+    bb_width_q: 0.25
+    lookback_bars: 20
+    volume_uptick_mult: 1.3
+    atr_mult_trail: 2.0
+
+ml:
+  model_types:
+  - xgboost
+  - lightgbm
+  - random_forest
+  
+  symbols:
+  - BTC-USD
+  - ETH-USD
+  
+  confidence_threshold: 0.65
+  retrain_frequency_days: 30
+  walk_forward_windows: 4
+  feature_selection: false
+  enabled: true
+
+ml_overlay:
+  enabled: true
+  mode: shadow  # Options: shadow, live, off
+  min_confidence_global: 0.55
+  per_pair_thresholds: true
+  daily_loss_cap: 0.05  # 5% daily loss cap
+  max_failures: 3
+  cooldown_minutes: 30
+  artifacts_dir: storage/artifacts
+  latest_file: storage/artifacts/latest.txt
+
+risk:
+  per_trade_risk_pct: 0.0075  # 0.75% risk per trade
+  daily_loss_cap_pct: 0.04    # 4% daily loss cap
+  max_open_positions: 3
+  trailing_stop_pct: 0.03     # 3% trailing stop
+
+live:
+  enabled: true
+  paper_trading: true  # IMPORTANT: Set to false only when ready for live trading
+  max_open_positions: 3
+  cooldown_bars: 12
+
+logging:
+  level: INFO
+  file_rotation: 1 day
+  max_file_size: 10 MB
+  telegram_notifications: false  # Set to true if using Telegram
+
+notifications:
+  telegram:
+    enabled: false
+    # Set via environment variables:
+    # TELEGRAM_BOT_TOKEN=your_token
+    # TELEGRAM_CHAT_ID=your_chat_id
+  
+  email:
+    enabled: false
+    smtp_server: ''
+    smtp_port: 587
+    username: ''
+    password: ''
+    recipients: []
+
+performance:
+  benchmark: BTC-USD
+  metrics:
+  - sharpe_ratio
+  - sortino_ratio
+  - calmar_ratio
+  - max_drawdown
+  - win_rate
+  - profit_factor
+
