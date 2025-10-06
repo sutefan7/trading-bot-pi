@@ -697,3 +697,4 @@ De trading bot is getransformeerd van een **proof-of-concept** met kritieke bugs
 
 
 
+
