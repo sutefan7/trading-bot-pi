@@ -36,6 +36,12 @@ class FeaturePipeline:
             # Use provided config or default
             feature_config = config or self.config
             
+            # ⚠️ MEMORY: Limit history on Raspberry Pi
+            MAX_HISTORY_BARS = 250  # Enough for all indicators
+            if len(df) > MAX_HISTORY_BARS:
+                logger.debug(f"📊 Limiting history from {len(df)} to {MAX_HISTORY_BARS} bars for memory optimization")
+                df = df.tail(MAX_HISTORY_BARS)
+            
             # Validate input data
             required_cols = ['open', 'high', 'low', 'close']
             missing_cols = [col for col in required_cols if col not in df.columns]
@@ -55,6 +61,12 @@ class FeaturePipeline:
             result_df = ensure_order_and_dtype(result_df)
             
             logger.debug(f"Built {len(self.feature_names)} features from {len(df)} rows")
+            
+            # ⚠️ MEMORY: Explicit cleanup of intermediate DataFrames
+            del df
+            import gc
+            gc.collect()
+            
             return result_df
             
         except Exception as e:

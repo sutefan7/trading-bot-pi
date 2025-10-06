@@ -114,8 +114,23 @@ class RiskManager:
             # Bereken position size gebaseerd op risk
             position_size = max_risk_amount / risk_per_unit
             
-            # Pas aan voor confidence (0.5 = 50% van normale size)
-            position_size *= confidence
+            # ⚠️ SAFETY FIX: More conservative confidence adjustment
+            # Use non-linear scaling to be less aggressive
+            confidence = max(0.3, confidence)  # Min 30% instead of 50%
+            confidence_factor = confidence ** 1.5  # Non-linear makes it more conservative
+            position_size *= confidence_factor
+            
+            # ⚠️ SAFETY FIX: Hard cap at 20% of portfolio
+            MAX_POSITION_PCT = 0.20  # NEVER more than 20% in one position
+            max_position_value_hard_cap = portfolio_value * MAX_POSITION_PCT
+            max_position_size_hard_cap = max_position_value_hard_cap / entry_price
+            
+            if position_size * entry_price > max_position_value_hard_cap:
+                logger.warning(
+                    f"Position size capped at {MAX_POSITION_PCT:.0%} of portfolio for {symbol}: "
+                    f"{position_size * entry_price:.2f} → {max_position_value_hard_cap:.2f}"
+                )
+                position_size = max_position_size_hard_cap
             
             # Limiteer tot beschikbare cash (max 90% van cash)
             max_position_value = self.cash * 0.90

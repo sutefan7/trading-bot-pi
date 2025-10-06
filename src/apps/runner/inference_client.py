@@ -44,6 +44,12 @@ class ModelManager:
         self.last_reload_check = None
         self.current_version = None
         
+        # ⚠️ RECOVERY: Track recovery state
+        self.recovery_scheduled_at: Optional[datetime] = None
+        self.recovery_attempt_count = 0
+        self.max_recovery_attempts = 5
+        self.previous_working_version: Optional[str] = None
+        
         # Threading
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
@@ -84,10 +90,14 @@ class ModelManager:
         logger.info("ModelManager stopped")
     
     def _monitor_loop(self):
-        """Main monitoring loop"""
+        """Main monitoring loop with recovery logic"""
         while not self._stop_event.is_set():
             try:
                 current_time = datetime.now()
+                
+                # ⚠️ RECOVERY: Try recovery if scheduled
+                if self.recovery_scheduled_at and current_time >= self.recovery_scheduled_at:
+                    self._attempt_recovery()
                 
                 # Check for new model versions
                 if (self.last_reload_check is None or 
@@ -109,22 +119,30 @@ class ModelManager:
                 time.sleep(30)  # Wait longer on error
     
     def _try_load_latest_model(self):
-        """Try to load the latest model"""
+        """
+        Try to load the latest model
+        
+        ⚠️ SAFETY FIX: Acquire lock BEFORE reading file to prevent race condition
+        """
         try:
-            if not self.latest_file.exists():
-                logger.warning(f"Latest file not found: {self.latest_file}")
-                return
-            
-            with open(self.latest_file, 'r') as f:
-                latest_path = f.read().strip()
-            
-            if not latest_path:
-                logger.warning("Latest file is empty")
-                return
-            
-            # Construct full path to model directory
-            model_dir = self.artifacts_dir / latest_path
-            self._load_model(str(model_dir))
+            # ⚠️ CRITICAL: Lock BEFORE reading file
+            with self._lock:
+                if not self.latest_file.exists():
+                    logger.warning(f"Latest file not found: {self.latest_file}")
+                    return
+                
+                with open(self.latest_file, 'r') as f:
+                    latest_path = f.read().strip()
+                
+                if not latest_path:
+                    logger.warning("Latest file is empty")
+                    return
+                
+                # Construct full path to model directory
+                model_dir = self.artifacts_dir / latest_path
+                
+                # Load model (already has lock, but _load_model will handle it)
+                self._load_model_internal(str(model_dir))
             
         except Exception as e:
             logger.error(f"Error loading latest model: {e}")
@@ -154,40 +172,60 @@ class ModelManager:
         except Exception as e:
             logger.error(f"Error checking for new model: {e}")
     
-    def _load_model(self, model_path: str):
-        """Load model from specified path"""
+    def _load_model_internal(self, model_path: str):
+        """
+        Load model from specified path (assumes lock is already held)
+        
+        ⚠️ INTERNAL METHOD: Caller must hold self._lock
+        """
         try:
-            with self._lock:
-                logger.info(f"Loading model from: {model_path}")
-                
-                # Create predictor and load model
-                predictor = ModelPredictor()
-                bundle = predictor.load_artifact(model_path)
-                
-                # Validate model
-                health_result = predictor.health_check(bundle)
-                if health_result["status"] != "healthy":
-                    raise ValueError(f"Model health check failed: {health_result}")
-                
-                # Update state
-                self.current_bundle = bundle
-                self.predictor = predictor
-                self.model_available = True
-                self.failure_count = 0
-                self.current_version = model_path
-                
-                logger.info(f"✅ Model loaded successfully: {bundle.version}")
-                
-                # Call callback
-                if self.on_model_loaded:
-                    try:
-                        self.on_model_loaded(bundle)
-                    except Exception as e:
-                        logger.error(f"Error in on_model_loaded callback: {e}")
-                
+            logger.info(f"Loading model from: {model_path}")
+            
+            # Create predictor and load model
+            predictor = ModelPredictor()
+            bundle = predictor.load_artifact(model_path)
+            
+            # Validate model
+            health_result = predictor.health_check(bundle)
+            if health_result["status"] != "healthy":
+                raise ValueError(f"Model health check failed: {health_result}")
+            
+            # ⚠️ RECOVERY: Save previous working version before updating
+            if self.model_available and self.current_version:
+                self.previous_working_version = self.current_version
+            
+            # Update state
+            self.current_bundle = bundle
+            self.predictor = predictor
+            self.model_available = True
+            self.failure_count = 0
+            self.current_version = model_path
+            
+            # Clear recovery state on successful load
+            self.recovery_scheduled_at = None
+            self.recovery_attempt_count = 0
+            
+            logger.info(f"✅ Model loaded successfully: {bundle.version}")
+            
+            # Call callback
+            if self.on_model_loaded:
+                try:
+                    self.on_model_loaded(bundle)
+                except Exception as e:
+                    logger.error(f"Error in on_model_loaded callback: {e}")
+            
         except Exception as e:
             logger.error(f"❌ Error loading model: {e}")
             self._handle_model_failure()
+    
+    def _load_model(self, model_path: str):
+        """
+        Load model from specified path (public method)
+        
+        ⚠️ SAFETY FIX: Proper locking for thread safety
+        """
+        with self._lock:
+            self._load_model_internal(model_path)
     
     def _perform_health_check(self):
         """Perform health check on current model"""
@@ -215,7 +253,11 @@ class ModelManager:
             self._handle_model_failure()
     
     def _handle_model_failure(self):
-        """Handle model failure with failover logic"""
+        """
+        Handle model failure with recovery logic
+        
+        ⚠️ RECOVERY: Schedule recovery instead of permanent disable
+        """
         try:
             with self._lock:
                 self.failure_count += 1
@@ -228,11 +270,23 @@ class ModelManager:
                     except Exception as e:
                         logger.error(f"Error in on_model_failed callback: {e}")
                 
-                # Check if we should disable ML overlay
+                # Check if we should disable ML overlay temporarily
                 if self.failure_count >= self.max_failures:
-                    logger.error(f"Max failures ({self.max_failures}) reached - disabling ML overlay")
+                    logger.error(f"Max failures ({self.max_failures}) reached - entering recovery mode")
                     self.model_available = False
                     self.current_bundle = None
+                    
+                    # ⚠️ RECOVERY: Schedule first recovery attempt in 15 minutes
+                    if not self.recovery_scheduled_at:
+                        self.recovery_scheduled_at = datetime.now() + timedelta(minutes=15)
+                        self.recovery_attempt_count = 0
+                        logger.info("⏰ Recovery scheduled in 15 minutes")
+                    
+                    # Try immediate rollback if we have previous version
+                    if self.previous_working_version:
+                        logger.info("🔄 Attempting immediate rollback...")
+                        if self._attempt_model_rollback():
+                            return  # Rollback successful, no need for scheduled recovery
                     
                     # Call failover callback
                     if self.on_failover:
@@ -253,29 +307,43 @@ class ModelManager:
             features: Feature dictionary
             
         Returns:
-            Prediction result or None if model unavailable
+            Prediction result dict or None if model unavailable
+            {
+                'symbol': str,
+                'timestamp': str,
+                'buy': bool,
+                'sell': bool,
+                'hold': bool,
+                'buy_prob': float,
+                'sell_prob': float,
+                'proba': float,
+                'confidence': float,
+                'model_version': str
+            }
         """
         try:
-            if not self.model_available or not self.current_bundle:
-                logger.debug(f"Model not available for {symbol}")
-                return None
-            
-            # Convert features to numpy array
-            feature_vector = self._features_to_vector(features)
-            if feature_vector is None:
-                logger.warning(f"Could not convert features to vector for {symbol}")
-                return None
-            
-            # Make prediction
-            predictor = ModelPredictor()
-            result = predictor.predict_one(self.current_bundle, feature_vector)
-            
-            # Add symbol and timestamp
-            result['symbol'] = symbol
-            result['timestamp'] = datetime.now().isoformat()
-            
-            logger.debug(f"ML prediction for {symbol}: {result}")
-            return result
+            # ⚠️ SAFETY FIX: Use lock to ensure model consistency during prediction
+            with self._lock:
+                if not self.model_available or not self.current_bundle:
+                    logger.debug(f"Model not available for {symbol}")
+                    return None
+                
+                # Convert features to numpy array
+                feature_vector = self._features_to_vector(features)
+                if feature_vector is None:
+                    logger.warning(f"Could not convert features to vector for {symbol}")
+                    return None
+                
+                # Make prediction - ⚠️ CRITICAL FIX: predict_one now returns Dict!
+                predictor = ModelPredictor()
+                result = predictor.predict_one(self.current_bundle, feature_vector)
+                
+                # Add symbol and timestamp
+                result['symbol'] = symbol
+                result['timestamp'] = datetime.now().isoformat()
+                
+                logger.debug(f"ML prediction for {symbol}: buy={result['buy']}, sell={result['sell']}, conf={result['confidence']:.3f}")
+                return result
             
         except Exception as e:
             logger.error(f"Error getting prediction for {symbol}: {e}")
@@ -347,6 +415,82 @@ class ModelManager:
         self.on_model_failed = on_model_failed
         self.on_failover = on_failover
         logger.info("Callbacks set")
+    
+    def _attempt_recovery(self):
+        """
+        ⚠️ RECOVERY: Attempt to recover from model failure
+        
+        Tries to:
+        1. Reload latest model
+        2. Rollback to previous working version if available
+        3. Schedule next attempt if failed
+        """
+        try:
+            logger.info(f"🔄 Attempting model recovery (attempt {self.recovery_attempt_count + 1}/{self.max_recovery_attempts})...")
+            
+            self.recovery_attempt_count += 1
+            
+            # Try to reload latest model first
+            self._try_load_latest_model()
+            
+            if self.model_available:
+                logger.info("✅ Model recovery successful!")
+                self.recovery_scheduled_at = None
+                self.recovery_attempt_count = 0
+                return
+            
+            # If latest failed and we have a previous working version, try rollback
+            if self.previous_working_version:
+                logger.info(f"🔄 Attempting rollback to previous version: {self.previous_working_version}")
+                try:
+                    self._load_model(self.previous_working_version)
+                    if self.model_available:
+                        logger.info("✅ Rollback successful!")
+                        self.recovery_scheduled_at = None
+                        self.recovery_attempt_count = 0
+                        return
+                except Exception as e:
+                    logger.error(f"Rollback failed: {e}")
+            
+            # If we've exhausted attempts, give up
+            if self.recovery_attempt_count >= self.max_recovery_attempts:
+                logger.error(f"❌ Recovery failed after {self.max_recovery_attempts} attempts - giving up")
+                self.recovery_scheduled_at = None
+                self.recovery_attempt_count = 0
+                return
+            
+            # Schedule next recovery attempt (exponential backoff)
+            backoff_minutes = min(30, 5 * (2 ** (self.recovery_attempt_count - 1)))
+            self.recovery_scheduled_at = datetime.now() + timedelta(minutes=backoff_minutes)
+            logger.info(f"⏰ Next recovery attempt scheduled in {backoff_minutes} minutes")
+            
+        except Exception as e:
+            logger.error(f"Error in recovery attempt: {e}")
+    
+    def _attempt_model_rollback(self):
+        """
+        ⚠️ RECOVERY: Attempt to rollback to previous working model version
+        """
+        try:
+            if not self.previous_working_version:
+                logger.warning("No previous working version available for rollback")
+                return False
+            
+            logger.info(f"🔄 Attempting rollback to: {self.previous_working_version}")
+            
+            try:
+                self._load_model(self.previous_working_version)
+                if self.model_available:
+                    logger.info("✅ Rollback successful!")
+                    return True
+            except Exception as e:
+                logger.error(f"Rollback failed: {e}")
+            
+            return False
+            
+        except Exception as e:
+            logger.error(f"Error in rollback: {e}")
+            return False
 
 
 # Convenience function for integration

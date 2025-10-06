@@ -38,10 +38,11 @@ from apps.runner.ml_overlay import MLOverlayManager, MLOffset, create_ml_overlay
 from apps.runner.shadow_ml_observer import ShadowMLObserver
 from apps.runner.notification_manager import create_notification_manager
 from apps.runner.instance_lock import require_single_instance
-from apps.runner.startup_reconcile import perform_startup_reconcile
-from execution.idempotent_executor import create_idempotent_executor
-from execution.circuit_breaker import with_resilience
-from monitoring.slo_monitor import create_slo_monitor
+# Removed dead imports (not needed for Pi version):
+# from apps.runner.startup_reconcile import perform_startup_reconcile
+# from execution.idempotent_executor import create_idempotent_executor
+# from execution.circuit_breaker import with_resilience
+# from monitoring.slo_monitor import create_slo_monitor
 from features.pipeline import FeaturePipeline
 
 
@@ -73,6 +74,13 @@ class TradingBotV4WithML:
         # ML state
         self.ml_overlay_enabled = False
         self.daily_loss_cap_triggered = False
+        
+        # ⚠️ PERFORMANCE: Data caching for Pi
+        self._data_cache = {}
+        self._cache_timestamps = {}
+        self._cache_ttl_seconds = 300  # 5 minutes cache
+        
+        logger.info("✅ Data caching enabled for Pi optimization")
         
         # Start ML model manager if available
         if self.model_manager:
@@ -197,6 +205,79 @@ class TradingBotV4WithML:
         else:
             logger.info("📊 Alleen non-ML strategieën actief")
     
+    def _get_cached_data(self, symbol: str, days: int = 30) -> Optional[pd.DataFrame]:
+        """
+        ⚠️ PERFORMANCE: Get data with caching for Pi optimization
+        
+        Args:
+            symbol: Trading symbol
+            days: Number of days of data
+            
+        Returns:
+            DataFrame or None
+        """
+        try:
+            cache_key = f"{symbol}_{days}d"
+            current_time = datetime.now()
+            
+            # Check if cache exists and is fresh
+            if cache_key in self._data_cache and cache_key in self._cache_timestamps:
+                cache_age = (current_time - self._cache_timestamps[cache_key]).total_seconds()
+                if cache_age < self._cache_ttl_seconds:
+                    logger.debug(f"📦 Cache hit for {symbol} (age: {cache_age:.0f}s)")
+                    return self._data_cache[cache_key]
+            
+            # Cache miss or stale - fetch new data
+            logger.debug(f"📥 Cache miss for {symbol} - fetching data")
+            df = self.data_manager.get_latest_data(symbol, days=days)
+            
+            if df is not None and len(df) > 0:
+                # ⚠️ MEMORY: Limit to essential data only (last 200 bars max)
+                MAX_CACHED_BARS = 200
+                if len(df) > MAX_CACHED_BARS:
+                    df = df.tail(MAX_CACHED_BARS)
+                
+                # Store in cache
+                self._data_cache[cache_key] = df.copy()  # Copy to avoid mutations
+                self._cache_timestamps[cache_key] = current_time
+                
+                # ⚠️ MEMORY: Cleanup old cache entries
+                self._cleanup_stale_cache()
+            
+            return df
+            
+        except Exception as e:
+            logger.error(f"Error getting cached data for {symbol}: {e}")
+            # Fallback to direct fetch
+            return self.data_manager.get_latest_data(symbol, days=days)
+    
+    def _cleanup_stale_cache(self):
+        """
+        ⚠️ MEMORY: Remove stale entries from cache
+        """
+        try:
+            current_time = datetime.now()
+            stale_keys = []
+            
+            for key, timestamp in self._cache_timestamps.items():
+                cache_age = (current_time - timestamp).total_seconds()
+                if cache_age > self._cache_ttl_seconds * 2:  # Double TTL for cleanup
+                    stale_keys.append(key)
+            
+            for key in stale_keys:
+                del self._data_cache[key]
+                del self._cache_timestamps[key]
+            
+            if stale_keys:
+                logger.debug(f"🗑️  Cleaned up {len(stale_keys)} stale cache entries")
+                
+                # ⚠️ MEMORY: Explicit garbage collection after cleanup
+                import gc
+                gc.collect()
+            
+        except Exception as e:
+            logger.error(f"Error cleaning cache: {e}")
+    
     def run_trading_cycle(self):
         """Voer één volledige trading cycle uit met ML overlay"""
         try:
@@ -269,8 +350,8 @@ class TradingBotV4WithML:
         
         for symbol in self.current_universe:
             try:
-                # Haal recente data op
-                df = self.data_manager.get_latest_data(symbol, days=30)
+                # ⚠️ PERFORMANCE: Use cached data
+                df = self._get_cached_data(symbol, days=30)
                 if df is None or len(df) < 50:
                     logger.warning(f"Onvoldoende data voor {symbol}")
                     continue
@@ -369,14 +450,17 @@ class TradingBotV4WithML:
             if not ml_result:
                 return None
             
+            # ⚠️ CRITICAL FIX: ml_result is now a Dict (was float before)
             # Converteer ML result naar signaal format
+            side = 'buy' if ml_result.get('buy', False) else 'sell' if ml_result.get('sell', False) else 'hold'
+            
             signal = {
-                'side': 'buy' if ml_result['buy'] else 'sell' if ml_result['sell'] else 'hold',
-                'confidence': ml_result['confidence'],
-                'ml_proba': ml_result['proba'],
-                'ml_buy_prob': ml_result['buy_prob'],
-                'ml_sell_prob': ml_result['sell_prob'],
-                'model_version': ml_result['model_version']
+                'side': side,
+                'confidence': ml_result.get('confidence', 0.5),
+                'ml_proba': ml_result.get('proba', 0.5),
+                'ml_buy_prob': ml_result.get('buy_prob', 0.5),
+                'ml_sell_prob': ml_result.get('sell_prob', 0.5),
+                'model_version': ml_result.get('model_version', 'unknown')
             }
             
             # Alleen returnen als er een duidelijke signaal is
@@ -413,17 +497,128 @@ class TradingBotV4WithML:
         except Exception as e:
             logger.error(f"Fout bij universe update: {e}")
     
+    def _validate_signal(self, signal: Dict) -> bool:
+        """
+        ⚠️ SAFETY: Validate signal structure
+        
+        Args:
+            signal: Signal dictionary
+            
+        Returns:
+            True if valid, False otherwise
+        """
+        try:
+            # Required fields
+            required_fields = ['symbol', 'side', 'entry', 'stop', 'confidence']
+            for field in required_fields:
+                if field not in signal:
+                    logger.error(f"Signal missing required field: {field}")
+                    return False
+            
+            # Validate side
+            if signal['side'] not in ['buy', 'sell']:
+                logger.error(f"Invalid side: {signal['side']}")
+                return False
+            
+            # Validate numeric fields
+            try:
+                entry = float(signal['entry'])
+                stop = float(signal['stop'])
+                confidence = float(signal['confidence'])
+                
+                if entry <= 0 or stop <= 0:
+                    logger.error(f"Invalid prices: entry={entry}, stop={stop}")
+                    return False
+                
+                if confidence < 0 or confidence > 1:
+                    logger.error(f"Invalid confidence: {confidence}")
+                    return False
+                
+            except (ValueError, TypeError) as e:
+                logger.error(f"Invalid numeric values in signal: {e}")
+                return False
+            
+            # Validate stop loss makes sense
+            if signal['side'] == 'buy' and stop >= entry:
+                logger.error(f"Invalid buy stop: stop ({stop}) >= entry ({entry})")
+                return False
+            
+            if signal['side'] == 'sell' and stop <= entry:
+                logger.error(f"Invalid sell stop: stop ({stop}) <= entry ({entry})")
+                return False
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error validating signal: {e}")
+            return False
+    
+    def _check_slippage(self, signal: Dict) -> bool:
+        """
+        ⚠️ SAFETY: Check slippage against current market price
+        
+        Args:
+            signal: Signal dictionary with entry price
+            
+        Returns:
+            True if slippage acceptable, False otherwise
+        """
+        try:
+            symbol = signal['symbol']
+            signal_entry = signal['entry']
+            
+            # Get current market price (use cache for performance)
+            df = self._get_cached_data(symbol, days=1)
+            if df is None or len(df) == 0:
+                logger.warning(f"No data available for {symbol} - skipping slippage check")
+                return True  # Allow if we can't check (data issue)
+            
+            current_price = df['close'].iloc[-1]
+            
+            # Calculate slippage
+            slippage_pct = abs(current_price - signal_entry) / signal_entry
+            
+            MAX_SLIPPAGE = 0.02  # 2% maximum slippage
+            
+            if slippage_pct > MAX_SLIPPAGE:
+                logger.warning(
+                    f"⚠️ Slippage too high for {symbol}: {slippage_pct:.2%} > {MAX_SLIPPAGE:.2%} "
+                    f"(signal_entry={signal_entry:.4f}, current={current_price:.4f})"
+                )
+                return False
+            
+            # Update entry price to current price if slippage acceptable
+            if slippage_pct > 0.001:  # Only log if > 0.1%
+                logger.info(f"Adjusting entry price for {symbol}: {signal_entry:.4f} → {current_price:.4f} (slippage: {slippage_pct:.2%})")
+                signal['entry'] = current_price
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error checking slippage for {symbol}: {e}")
+            return False  # Fail-safe: reject if we can't verify
+    
     def _execute_signals(self, signals: List[Dict]):
-        """Voer signalen uit via executor"""
+        """Voer signalen uit via executor met validation en slippage protection"""
         for signal in signals:
             try:
+                # ⚠️ SAFETY: Validate signal structure
+                if not self._validate_signal(signal):
+                    logger.warning(f"Invalid signal rejected: {signal.get('symbol', 'unknown')}")
+                    continue
+                
+                # ⚠️ SAFETY: Check slippage
+                if not self._check_slippage(signal):
+                    logger.warning(f"Signal rejected due to high slippage: {signal['symbol']}")
+                    continue
+                
                 symbol = signal['symbol']
                 bar_ts = datetime.now()  # In echte implementatie: timestamp van bar
                 
                 result = self.executor.maybe_execute(symbol, signal, bar_ts)
                 if result:
                     signal_type = "ML" if signal.get('ml_enhanced', False) else "Non-ML"
-                    logger.info(f"✅ {signal_type} trade uitgevoerd: {symbol} {signal['side']}")
+                    logger.info(f"✅ {signal_type} trade uitgevoerd: {symbol} {signal['side']} @ {signal['entry']:.4f}")
                 else:
                     logger.debug(f"Trade niet uitgevoerd: {symbol}")
                     
@@ -437,8 +632,8 @@ class TradingBotV4WithML:
             
             for symbol, position in positions.items():
                 try:
-                    # Haal huidige prijs op
-                    df = self.data_manager.get_latest_data(symbol, days=1)
+                    # ⚠️ PERFORMANCE: Use cached data
+                    df = self._get_cached_data(symbol, days=1)
                     if df is None or len(df) == 0:
                         continue
                     

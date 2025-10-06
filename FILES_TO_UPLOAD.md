@@ -331,3 +331,5 @@ Repository size:            ~500KB (zonder venv/data)
 **Status:** ✅ READY FOR PRIVATE GITHUB UPLOAD  
 **Total upload size:** ~500KB (zonder venv/data)
 
+
+
