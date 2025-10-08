@@ -32,7 +32,7 @@ portfolio:
   fx_source: kraken
 api:
   kraken:
-    dry_run: true
+    dry_run: false
     rate_limit: 1.0
 regime:
   anchor_symbol: BTC-USD

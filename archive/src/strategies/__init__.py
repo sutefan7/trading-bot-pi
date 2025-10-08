@@ -1,5 +1,0 @@
-"""Trading strategies module"""
-
-
-
-
