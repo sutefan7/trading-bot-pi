@@ -97,6 +97,39 @@ class TechnicalIndicators:
         except Exception as e:
             logger.error(f"Error adding trend indicators: {e}")
             return df
+
+    def add_sma(self, df: pd.DataFrame, period: int) -> pd.DataFrame:
+        """Add a simple moving average column named 'SMA_<period>'"""
+        try:
+            result_df = df.copy()
+            col_name = f"SMA_{period}"
+            result_df[col_name] = result_df['close'].rolling(window=period, min_periods=1).mean()
+            return result_df
+        except Exception as e:
+            logger.error(f"Error adding SMA({period}): {e}")
+            return df
+
+    def add_adx(self, df: pd.DataFrame, period: int) -> pd.DataFrame:
+        """Add ADX column named 'ADX_<period>'"""
+        try:
+            result_df = df.copy()
+            adx = ADXIndicator(result_df['high'], result_df['low'], result_df['close'], window=period)
+            result_df[f"ADX_{period}"] = adx.adx()
+            return result_df
+        except Exception as e:
+            logger.error(f"Error adding ADX({period}): {e}")
+            return df
+
+    def add_atr(self, df: pd.DataFrame, period: int) -> pd.DataFrame:
+        """Add ATR column named 'ATR' (single standard name used by regime filter)"""
+        try:
+            result_df = df.copy()
+            atr = AverageTrueRange(result_df['high'], result_df['low'], result_df['close'], window=period)
+            result_df['ATR'] = atr.average_true_range()
+            return result_df
+        except Exception as e:
+            logger.error(f"Error adding ATR({period}): {e}")
+            return df
     
     def add_momentum_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         """Add momentum indicators (RSI, Stochastic)"""

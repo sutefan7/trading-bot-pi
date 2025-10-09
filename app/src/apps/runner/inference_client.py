@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional, List, Callable
 from datetime import datetime, timedelta
 from loguru import logger
+import yaml
 
 # Add src to path for imports
 import sys
@@ -44,6 +45,13 @@ class ModelManager:
         self.last_reload_check = None
         self.current_version = None
         
+        # Index (multi-bundle) mode
+        self.index_file = (Path(artifacts_dir) / "index.yaml")
+        self.index_mode = False
+        self.symbol_to_modeldir: Dict[str, str] = {}
+        self.symbol_to_bundle: Dict[str, ModelBundle] = {}
+        self.last_index_mtime: Optional[float] = None
+        
         # ⚠️ RECOVERY: Track recovery state
         self.recovery_scheduled_at: Optional[datetime] = None
         self.recovery_attempt_count = 0
@@ -76,7 +84,10 @@ class ModelManager:
         self._monitor_thread.start()
         
         # Initial load
-        self._try_load_latest_model()
+        # Try index.yaml first (multi-bundle). If not present or fails, fall back to latest.txt
+        index_loaded = self._try_load_index_models()
+        if not index_loaded:
+            self._try_load_latest_model()
         
         logger.info("ModelManager started")
     
@@ -102,7 +113,10 @@ class ModelManager:
                 # Check for new model versions
                 if (self.last_reload_check is None or 
                     (current_time - self.last_reload_check).total_seconds() > self.reload_interval):
-                    self._check_for_new_model()
+                    if self.index_mode:
+                        self._check_for_index_update()
+                    else:
+                        self._check_for_new_model()
                     self.last_reload_check = current_time
                 
                 # Perform health check
@@ -147,6 +161,96 @@ class ModelManager:
         except Exception as e:
             logger.error(f"Error loading latest model: {e}")
             self._handle_model_failure()
+    
+    def _try_load_index_models(self) -> bool:
+        """
+        Try to load per-symbol model bundles defined in index.yaml.
+        Expected format:
+        models:
+          BTC-USD: BTC_USD
+          ETH-USD: ETH_USD
+        Or a top-level mapping { 'BTC-USD': 'BTC_USD', ... }
+        """
+        try:
+            with self._lock:
+                if not self.index_file.exists():
+                    return False
+                try:
+                    data = yaml.safe_load(self.index_file.read_text()) or {}
+                except Exception as ye:
+                    logger.warning(f"Failed to read index file {self.index_file}: {ye}")
+                    return False
+                mapping = data.get("models") if isinstance(data, dict) else None
+                if mapping is None and isinstance(data, dict):
+                    # Allow direct mapping at root
+                    mapping = {k: v for k, v in data.items() if isinstance(v, (str, int, float))}
+                if not mapping:
+                    logger.warning("index.yaml found but no 'models' mapping present")
+                    return False
+                # Normalize and load bundles
+                loaded_any = False
+                new_symbol_to_bundle: Dict[str, ModelBundle] = {}
+                new_symbol_to_modeldir: Dict[str, str] = {}
+                for sym, dir_name in mapping.items():
+                    if not isinstance(dir_name, str):
+                        continue
+                    symbol = str(sym).upper()
+                    model_dirname = str(dir_name).strip()
+                    model_dir = self.artifacts_dir / model_dirname
+                    try:
+                        predictor = ModelPredictor()
+                        bundle = predictor.load_artifact(str(model_dir))
+                        new_symbol_to_bundle[symbol] = bundle
+                        new_symbol_to_modeldir[symbol] = model_dirname
+                        loaded_any = True
+                    except Exception as le:
+                        logger.warning(f"Failed to load bundle for {symbol} -> {model_dirname}: {le}")
+                        continue
+                if not loaded_any:
+                    logger.error("index.yaml present but no bundles could be loaded")
+                    return False
+                # Activate index mode
+                self.symbol_to_bundle = new_symbol_to_bundle
+                self.symbol_to_modeldir = new_symbol_to_modeldir
+                self.index_mode = True
+                self.model_available = True
+                # Set a default bundle (first loaded)
+                first_bundle = next(iter(new_symbol_to_bundle.values()))
+                self.current_bundle = first_bundle
+                self.predictor = ModelPredictor()
+                self.current_version = str(self.index_file)
+                # Track mtime to detect updates
+                try:
+                    self.last_index_mtime = self.index_file.stat().st_mtime
+                except Exception:
+                    self.last_index_mtime = None
+                logger.info(f"🔢 Index mode enabled: {len(self.symbol_to_bundle)} bundles loaded from {self.index_file}")
+                return True
+        except Exception as e:
+            logger.error(f"Error loading index models: {e}")
+            return False
+    
+    def _check_for_index_update(self):
+        """Reload index.yaml and bundles if the file changed."""
+        try:
+            if not self.index_mode:
+                return
+            if not self.index_file.exists():
+                logger.warning("index.yaml removed, falling back to latest.txt mode")
+                # Clear index mode and fall back
+                self.index_mode = False
+                self.symbol_to_bundle.clear()
+                self.symbol_to_modeldir.clear()
+                self.last_index_mtime = None
+                self._try_load_latest_model()
+                return
+            mtime = self.index_file.stat().st_mtime
+            if self.last_index_mtime is None or mtime > self.last_index_mtime:
+                logger.info("index.yaml changed - reloading bundles")
+                # Re-load
+                self._try_load_index_models()
+        except Exception as e:
+            logger.error(f"Error checking index update: {e}")
     
     def _check_for_new_model(self):
         """Check for new model versions"""
@@ -324,10 +428,18 @@ class ModelManager:
         try:
             # ⚠️ SAFETY FIX: Use lock to ensure model consistency during prediction
             with self._lock:
-                if not self.model_available or not self.current_bundle:
+                if not self.model_available:
                     logger.debug(f"Model not available for {symbol}")
                     return None
                 
+                # Select per-symbol bundle if available (index mode), else fall back to current bundle
+                active_bundle = self.symbol_to_bundle.get(symbol.upper(), None) if self.index_mode else None
+                if active_bundle is None:
+                    active_bundle = self.current_bundle
+                if active_bundle is None:
+                    logger.debug(f"No active bundle for {symbol}")
+                    return None
+
                 # Convert features to numpy array
                 feature_vector = self._features_to_vector(features)
                 if feature_vector is None:
@@ -336,7 +448,7 @@ class ModelManager:
                 
                 # Make prediction - ⚠️ CRITICAL FIX: predict_one now returns Dict!
                 predictor = ModelPredictor()
-                result = predictor.predict_one(self.current_bundle, feature_vector)
+                result = predictor.predict_one(active_bundle, feature_vector)
                 
                 # Add symbol and timestamp
                 result['symbol'] = symbol

@@ -1,0 +1,7 @@
+{
+  "coin": "TAO_USD",
+  "model_type": "XGBClassifier",
+  "export_timestamp": "20251008_1608",
+  "input_features": 34,
+  "format": "ONNX"
+}

@@ -1,0 +1,18 @@
+{
+  "model_version": "ensemble_v42",
+  "git_sha": "unknown",
+  "symbols": [
+    "SOL-USD",
+    "ETH-USD",
+    "AVAX-USD"
+  ],
+  "train_window": "2023-01-01..2025-10-01",
+  "metrics": {
+    "auc": 0.82,
+    "accuracy": 0.72
+  },
+  "verified": true,
+  "created_at": "2025-10-07T14:28:39.808538",
+  "feature_count": 34,
+  "schema_version": "1.0"
+}

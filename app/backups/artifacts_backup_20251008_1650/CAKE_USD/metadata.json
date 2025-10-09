@@ -1,0 +1,7 @@
+{
+  "coin": "CAKE_USD",
+  "model_type": "XGBClassifier",
+  "export_timestamp": "20251008_1639",
+  "input_features": 34,
+  "format": "ONNX"
+}

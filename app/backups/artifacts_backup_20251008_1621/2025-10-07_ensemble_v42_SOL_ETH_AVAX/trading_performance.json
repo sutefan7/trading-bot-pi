@@ -1,0 +1,20 @@
+{
+  "model_metrics": {
+    "auc": 0.82,
+    "accuracy": 0.72
+  },
+  "estimated_trading_metrics": {
+    "win_rate": 0.72,
+    "sharpe_ratio": 1.28,
+    "max_drawdown": 0.104,
+    "profit_factor": 1.64,
+    "total_return": 32.0
+  },
+  "risk_metrics": {
+    "var_95": 0.083,
+    "expected_shortfall": 0.094,
+    "volatility": 0.125
+  },
+  "confidence_level": "estimated",
+  "created_at": "2025-10-07T14:28:39.808794"
+}

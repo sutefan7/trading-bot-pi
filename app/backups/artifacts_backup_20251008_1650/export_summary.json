@@ -1,0 +1,7 @@
+{
+  "export_timestamp": "20251008_1639",
+  "total_models": 10,
+  "format": "ONNX",
+  "artifacts_directory": "storage/artifacts",
+  "feature_count": 34
+}
