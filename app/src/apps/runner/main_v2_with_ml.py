@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from pathlib import Path
 import pandas as pd
+import requests
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -84,9 +85,16 @@ class TradingBotV4WithML:
         
         # Start ML model manager if available
         if self.model_manager:
-            # Only load initial model, don't start monitoring
-            self.model_manager._try_load_latest_model()
-            logger.info("🤖 ML ModelManager gestart (monitoring disabled)")
+            # Probeer eerst index.yaml (multi-bundle), anders latest.txt
+            index_loaded = self.model_manager._try_load_index_models()
+            if not index_loaded:
+                self.model_manager._try_load_latest_model()
+            logger.info("🤖 ML ModelManager geladen (index-mode: {} )".format(self.model_manager.index_mode))
+            # Dynamisch symbols synchroniseren op basis van index + Kraken beschikbaarheid
+            try:
+                self._refresh_symbols_from_index()
+            except Exception as e:
+                logger.warning(f"Kon trading symbols niet verversen vanuit index: {e}")
         
         logger.info("✅ Trading Bot v4 (ML-enabled) succesvol geïnitialiseerd")
     
@@ -204,6 +212,35 @@ class TradingBotV4WithML:
             logger.info("🤖 ML overlay ingeschakeld")
         else:
             logger.info("📊 Alleen non-ML strategieën actief")
+
+    def _refresh_symbols_from_index(self):
+        """Synchroniseer trading symbols dynamisch met index.yaml bundels en Kraken support."""
+        if not (self.model_manager and self.model_manager.index_mode):
+            return
+        # 1) Neem symbolen uit index.yaml
+        index_symbols = list(self.model_manager.symbol_to_bundle.keys())
+        if not index_symbols:
+            return
+        # 2) Filter op Kraken-beschikbaarheid
+        supported = []
+        try:
+            resp = requests.get("https://api.kraken.com/0/public/AssetPairs", timeout=8)
+            data = resp.json().get('result', {}) if resp.ok else {}
+            wsnames = {v.get('wsname') for v in data.values() if isinstance(v, dict)}
+            for sym in index_symbols:
+                # Verwacht formaat AAA-USD → AAA/USD
+                slash = sym.replace('-', '/')
+                if f"{slash}" in wsnames:
+                    supported.append(sym)
+        except Exception:
+            # Bij netwerkfout: val terug op huidige config symbols
+            supported = self.trading_config.symbols
+        if not supported:
+            logger.warning("Geen ondersteunde symbols gevonden uit index; behoud huidige configuratie")
+            return
+        # 3) Update trading config symbols in-memory
+        self.trading_config.symbols = supported
+        logger.info(f"🌐 Dynamisch symbols gezet vanuit index: {supported}")
     
     def _get_cached_data(self, symbol: str, days: int = 30) -> Optional[pd.DataFrame]:
         """

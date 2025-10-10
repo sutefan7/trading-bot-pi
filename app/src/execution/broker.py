@@ -456,12 +456,22 @@ class LiveBroker(BrokerInterface):
         """Converteer symbol naar Kraken formaat"""
         # Kraken gebruikt andere symbol formaten
         symbol_map = {
+            # Basis-set (bestaat zeker)
             'BTC-USD': 'BTC/USD',
             'ETH-USD': 'ETH/USD',
             'SOL-USD': 'SOL/USD',
             'ADA-USD': 'ADA/USD',
             'XRP-USD': 'XRP/USD',
             'LINK-USD': 'LINK/USD',
+            # Bundel-set (gevalideerd via Kraken AssetPairs)
+            'APT-USD': 'APT/USD',
+            'BNB-USD': 'BNB/USD',
+            'CAKE-USD': 'CAKE/USD',
+            'MNT-USD': 'MNT/USD',
+            'WLD-USD': 'WLD/USD',
+            'WLFI-USD': 'WLFI/USD',
+            'XMR-USD': 'XMR/USD',
+            'XPL-USD': 'XPL/USD',
         }
         return symbol_map.get(symbol)
     
