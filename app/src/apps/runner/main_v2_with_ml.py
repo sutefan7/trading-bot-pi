@@ -6,12 +6,22 @@ import sys
 import os
 import time
 import schedule
+import json
+import statistics
+from collections import Counter
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 from pathlib import Path
 import pandas as pd
 import requests
 import shutil
+import yaml
+
+try:
+    import numpy as np
+    NUMPY_AVAILABLE = True
+except ImportError:
+    NUMPY_AVAILABLE = False
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -109,6 +119,15 @@ class TradingBotV4WithML:
         self._last_opportunities: List[Dict[str, Any]] = []
         self._alerts: List[Dict[str, Any]] = []
         self._recent_signals: List[Dict[str, Any]] = []
+        self._max_alerts: int = 100
+        self._max_opportunities: int = 100
+        self._max_signals: int = 200
+        self._market_snapshots: Dict[str, Any] = {}
+        self._last_ml_models_snapshot: Dict[str, Any] = {}
+        self._last_signal_snapshot: Dict[str, Any] = {}
+        self._last_risk_snapshot: Dict[str, Any] = {}
+        self._last_ml_latency = []
+        self._open_trades: Dict[str, Dict[str, Any]] = {}
 
         logger.info("✅ Trading Bot v4 (ML-enabled) succesvol geïnitialiseerd")
     
@@ -481,6 +500,22 @@ class TradingBotV4WithML:
                                f"(confidence: {best_signal['confidence']:.3f})")
                     signals.append(best_signal)
                 
+                # Track latest signal info for reporting
+                if valid_signals:
+                    try:
+                        self._recent_signals.append({
+                            "ts": utc_now_iso(),
+                            "symbol": symbol,
+                            "strategy": best_signal.get("strategy_name"),
+                            "side": best_signal.get("side"),
+                            "confidence": best_signal.get("confidence"),
+                            "ml": bool(best_signal.get("ml_enhanced", False)),
+                        })
+                        # Keep bounded history
+                        self._recent_signals = self._recent_signals[-self._max_signals:]
+                    except Exception as log_err:
+                        logger.debug(f"recent signal tracking failed: {log_err}")
+
             except Exception as e:
                 logger.error(f"Fout bij signaal generatie voor {symbol}: {e}")
         
@@ -499,7 +534,10 @@ class TradingBotV4WithML:
             feature_dict = dict(zip(self.feature_pipeline.feature_names, feature_vector))
             
             # Krijg ML prediction
+            start_time = time.time()
             ml_result = self.model_manager.get_prediction(symbol, feature_dict)
+            latency_ms = (time.time() - start_time) * 1000.0
+            self._record_ml_latency(latency_ms)
             
             if not ml_result:
                 return None
@@ -519,6 +557,7 @@ class TradingBotV4WithML:
             
             # Alleen returnen als er een duidelijke signaal is
             if signal['side'] != 'hold':
+                signal['latency_ms'] = latency_ms
                 return signal
             
             return None
@@ -527,6 +566,59 @@ class TradingBotV4WithML:
             logger.error(f"Error generating ML signal for {symbol}: {e}")
             return None
     
+    def _record_ml_latency(self, latency_ms: float) -> None:
+        try:
+            self._last_ml_latency.append(latency_ms)
+            self._last_ml_latency = self._last_ml_latency[-500:]
+        except Exception as e:
+            logger.debug(f"record latency failed: {e}")
+
+    def _handle_trade_close(self, result: Dict[str, Any]) -> None:
+        try:
+            symbol = result.get('symbol')
+            open_meta = self._open_trades.get(symbol, {})
+            signal_meta = open_meta.get('signal', {}) if isinstance(open_meta, dict) else {}
+            execution_meta = open_meta.get('execution', {}) if isinstance(open_meta, dict) else {}
+            trade_id = execution_meta.get('order_id') or result.get('order_id')
+            closed_at = utc_now_iso()
+            entry_time = result.get('entry_time')
+            exit_time = result.get('exit_time')
+
+            trade_event = {
+                "event": "close",
+                "ts": closed_at,
+                "trade_id": str(trade_id or f"{symbol}-{closed_at}"),
+                "symbol": symbol,
+                "side": result.get('side'),
+                "qty": result.get('size'),
+                "entry_price_eur": result.get('entry_price'),
+                "exit_price_eur": result.get('exit_price'),
+                "pnl_eur": result.get('pnl'),
+                "pnl_pct": result.get('pnl_pct'),
+                "reason": result.get('reason'),
+                "status": "closed",
+                "duration_sec": result.get('duration').total_seconds() if result.get('duration') else None,
+                "entry_time": entry_time.isoformat() if hasattr(entry_time, 'isoformat') else None,
+                "exit_time": exit_time.isoformat() if hasattr(exit_time, 'isoformat') else None,
+                "ml": bool(signal_meta.get('ml_enhanced', False)),
+                "strategy": signal_meta.get('strategy_name') or execution_meta.get('strategy'),
+                "model_version": execution_meta.get('model_version') or signal_meta.get('model_version'),
+                "confidence": signal_meta.get('confidence'),
+                "tags": open_meta.get('execution', {}).get('tags') if isinstance(open_meta, dict) else []
+            }
+            self.reporter.append_jsonl("trades", trade_event)
+            self._push_alert({
+                "ts": trade_event["ts"],
+                "type": "trade_close",
+                "severity": "info",
+                "message": f"Trade gesloten voor {trade_event['symbol']}",
+                "symbol": trade_event['symbol'],
+                "pnl_eur": trade_event['pnl_eur'],
+                "reason": trade_event['reason']
+            })
+        except Exception as e:
+            logger.debug(f"trade close handling failed: {e}")
+
     def _update_universe(self):
         """Update universe indien nodig"""
         try:
@@ -673,24 +765,27 @@ class TradingBotV4WithML:
                 if result:
                     # Append trade JSONL
                     try:
-                        self.reporter.append_jsonl("trades", {
-                            "ts": utc_now_iso(),
-                            "trade_id": str(result.get('order_id')),
-                            "symbol": result.get('symbol'),
-                            "side": result.get('side'),
-                            "qty": result.get('size'),
-                            "price_eur": result.get('entry_price'),
-                            "fee_eur": 0.0,
-                            "status": "filled",
-                            "pnl_eur": 0.0,
-                            "model_id": None,
-                            "model_ver": result.get('model_version'),
-                            "tags": ["signal:" + result.get('strategy', 'unknown')],
-                        })
+                        self.reporter.append_jsonl("trades", self._build_trade_open_event(result, signal))
                     except Exception as le:
                         logger.debug(f"trade jsonl append failed: {le}")
                     signal_type = "ML" if signal.get('ml_enhanced', False) else "Non-ML"
                     logger.info(f"✅ {signal_type} trade uitgevoerd: {symbol} {signal['side']} @ {signal['entry']:.4f}")
+                    self._register_opportunity(signal, result)
+                    self._push_alert({
+                        "ts": utc_now_iso(),
+                        "type": "trade_open",
+                        "severity": "info",
+                        "message": f"{signal_type} trade geopend voor {symbol}",
+                        "symbol": symbol,
+                        "side": signal.get('side'),
+                        "confidence": signal.get('confidence'),
+                        "strategy": signal.get('strategy_name')
+                    })
+                    self._open_trades[symbol] = {
+                        "signal": signal,
+                        "execution": result,
+                        "opened_at": utc_now_iso()
+                    }
                 else:
                     logger.debug(f"Trade niet uitgevoerd: {symbol}")
                     
@@ -715,12 +810,67 @@ class TradingBotV4WithML:
                     result = self.risk_manager.update_position(symbol, current_price)
                     if result:
                         logger.info(f"Positie gesloten: {symbol}")
+                        self._handle_trade_close(result)
+                        self._open_trades.pop(symbol, None)
                         
                 except Exception as e:
                     logger.error(f"Fout bij positie update voor {symbol}: {e}")
                     
         except Exception as e:
             logger.error(f"Fout bij posities update: {e}")
+
+    def _build_trade_open_event(self, execution: Dict[str, Any], signal: Dict[str, Any]) -> Dict[str, Any]:
+        opened_at = utc_now_iso()
+        trade_id = execution.get('order_id') or execution.get('symbol')
+        return {
+            "event": "open",
+            "ts": opened_at,
+            "trade_id": str(trade_id or f"{execution.get('symbol')}-{opened_at}"),
+            "symbol": execution.get('symbol'),
+            "side": execution.get('side'),
+            "qty": execution.get('size'),
+            "entry_price_eur": execution.get('entry_price'),
+            "stop_price_eur": execution.get('stop_price'),
+            "take_profit_eur": execution.get('take_profit_price'),
+            "confidence": signal.get('confidence'),
+            "ml": bool(signal.get('ml_enhanced', False)),
+            "model_version": execution.get('model_version') or signal.get('model_version'),
+            "strategy": signal.get('strategy_name'),
+            "latency_ms": signal.get('latency_ms'),
+            "pnl_eur": 0.0,
+            "pnl_pct": 0.0,
+            "reason": "entry",
+            "status": "open",
+            "tags": [
+                f"strategy:{signal.get('strategy_name', 'unknown')}",
+                f"ml:{'1' if signal.get('ml_enhanced', False) else '0'}"
+            ]
+        }
+
+    def _push_alert(self, alert: Dict[str, Any]) -> None:
+        try:
+            self._alerts.append(alert)
+            self._alerts = self._alerts[-self._max_alerts:]
+        except Exception as e:
+            logger.debug(f"push alert failed: {e}")
+
+    def _register_opportunity(self, signal: Dict[str, Any], execution: Dict[str, Any]) -> None:
+        try:
+            opportunity = {
+                "ts": utc_now_iso(),
+                "symbol": signal.get('symbol'),
+                "side": signal.get('side'),
+                "confidence": signal.get('confidence'),
+                "strategy": signal.get('strategy_name'),
+                "ml": bool(signal.get('ml_enhanced', False)),
+                "entry_price": execution.get('entry_price'),
+                "size": execution.get('size'),
+                "order_id": execution.get('order_id'),
+            }
+            self._last_opportunities.append(opportunity)
+            self._last_opportunities = self._last_opportunities[-self._max_opportunities:]
+        except Exception as e:
+            logger.debug(f"register opportunity failed: {e}")
     
     def _download_data(self, symbol: str) -> bool:
         """Download data voor symbol"""
@@ -827,6 +977,8 @@ class TradingBotV4WithML:
                     "pnl_eur": float(getattr(pos, 'pnl', 0.0)),
                     "balance_eur": portfolio.total_value,
                     "weight_pct": float(position_value / total_value),
+                    "status": "open",
+                    "confidence": None
                 })
             self.reporter.write_snapshot("portfolio.json", {
                 "ts": ts,
@@ -834,8 +986,19 @@ class TradingBotV4WithML:
                 "pnl_eur": portfolio.total_pnl,
                 "realized_pnl_eur": getattr(portfolio, 'realized_pnl', 0.0),
                 "unrealized_pnl_eur": getattr(portfolio, 'unrealized_pnl', portfolio.total_pnl),
+                "cash_eur": portfolio.cash,
                 "open_positions": len(self.risk_manager.positions),
+                "metrics": {
+                    "win_rate": metrics.get('win_rate'),
+                    "profit_factor": metrics.get('profit_factor'),
+                    "total_trades": metrics.get('total_trades'),
+                    "wins": metrics.get('wins'),
+                    "losses": metrics.get('losses'),
+                    "max_drawdown": metrics.get('current_drawdown'),
+                    "daily_pnl_eur": portfolio.daily_pnl
+                },
                 "positions": positions,
+                "updated_at": ts
             })
         except Exception as e:
             logger.warning(f"Snapshot write failed: {e}")
@@ -930,13 +1093,18 @@ class TradingBotV4WithML:
         try:
             ts = utc_now_iso()
             portfolio = self.risk_manager.get_portfolio_status()
+            metrics = self.risk_manager.get_risk_metrics()
             self.reporter.write_snapshot("performance_summary.json", {
                 "ts": ts,
-                "win_rate": 0.0,
-                "sharpe": 0.0,
+                "total_trades": metrics.get('total_trades', 0),
+                "wins": metrics.get('wins', 0),
+                "losses": metrics.get('losses', 0),
+                "win_rate": metrics.get('win_rate', 0.0),
+                "profit_factor": metrics.get('profit_factor', 0.0),
+                "sharpe": metrics.get('sharpe_ratio', 0.0),
                 "max_drawdown": portfolio.max_drawdown,
-                "profit_factor": 0.0,
-                "total_trades": 0,
+                "daily_pnl": portfolio.daily_pnl,
+                "pnl_eur": portfolio.total_pnl,
                 "period": "24h"
             })
         except Exception as e:
@@ -953,11 +1121,253 @@ class TradingBotV4WithML:
                 "pnl_eur": portfolio.total_pnl,
                 "drawdown_pct": metrics.get('current_drawdown', 0.0),
                 "open_positions": metrics.get('open_positions', 0),
-                "metrics": {"win_rate": 0.0, "sharpe": 0.0, "profit_factor": 0.0}
+                "cash_eur": portfolio.cash,
+                "metrics": {
+                    "win_rate": metrics.get('win_rate'),
+                    "sharpe": metrics.get('sharpe_ratio'),
+                    "profit_factor": metrics.get('profit_factor'),
+                    "total_trades": metrics.get('total_trades'),
+                    "wins": metrics.get('wins'),
+                    "losses": metrics.get('losses'),
+                    "gross_profit": metrics.get('gross_profit'),
+                    "gross_loss": metrics.get('gross_loss'),
+                    "daily_pnl_eur": portfolio.daily_pnl
+                },
+                "positions": [
+                    {
+                        "symbol": sym,
+                        "side": pos.side,
+                        "qty": pos.size,
+                        "avg_price_eur": pos.entry_price,
+                        "pnl_eur": float(getattr(pos, 'pnl', 0.0)),
+                        "pnl_pct": float(getattr(pos, 'pnl_pct', 0.0)),
+                        "status": "open",
+                        "confidence": None,
+                        "weight_pct": float((pos.size * pos.entry_price) / portfolio.total_value) if portfolio.total_value else 0.0
+                    }
+                    for sym, pos in self.risk_manager.positions.items()
+                ]
             })
         except Exception as e:
             logger.debug(f"portfolio jsonl append failed: {e}")
     
+    # Additional snapshots for dashboard integration
+    def _snapshot_ml_overview(self):
+        try:
+            ts = utc_now_iso()
+            overview = self._build_ml_overview_payload(ts)
+            self.reporter.write_snapshot("ml_models.json", overview)
+            self._last_ml_models_snapshot = overview
+        except Exception as e:
+            logger.debug(f"ml overview snapshot failed: {e}")
+
+    def _snapshot_signal_overview(self):
+        try:
+            ts = utc_now_iso()
+            payload = self._build_signal_quality_payload(ts)
+            self.reporter.write_snapshot("signal_overview.json", payload)
+            self._last_signal_snapshot = payload
+        except Exception as e:
+            logger.debug(f"signal overview snapshot failed: {e}")
+
+    def _snapshot_market_overview(self):
+        try:
+            ts = utc_now_iso()
+            payload = self._build_market_overview_payload(ts)
+            self.reporter.write_snapshot("market_overview.json", payload)
+        except Exception as e:
+            logger.debug(f"market overview snapshot failed: {e}")
+
+    def _snapshot_risk_metrics(self):
+        try:
+            ts = utc_now_iso()
+            payload = self._build_risk_metrics_payload(ts)
+            self.reporter.write_snapshot("risk_metrics.json", payload)
+            self._last_risk_snapshot = payload
+        except Exception as e:
+            logger.debug(f"risk metrics snapshot failed: {e}")
+
+    def _snapshot_alerts(self):
+        try:
+            ts = utc_now_iso()
+            payload = {
+                "ts": ts,
+                "alerts": self._alerts[-self._max_alerts:],
+            }
+            self.reporter.write_snapshot("alerts.json", payload)
+        except Exception as e:
+            logger.debug(f"alerts snapshot failed: {e}")
+
+    def _snapshot_opportunities(self):
+        try:
+            ts = utc_now_iso()
+            payload = {
+                "ts": ts,
+                "opportunities": self._last_opportunities[-self._max_opportunities:],
+            }
+            self.reporter.write_snapshot("opportunities.json", payload)
+        except Exception as e:
+            logger.debug(f"opportunities snapshot failed: {e}")
+
+    def _build_ml_overview_payload(self, ts: str) -> Dict[str, Any]:
+        models: List[Dict[str, Any]] = []
+        if self.model_manager:
+            try:
+                status = self.model_manager.get_model_status()
+                model_info = status.get('model_info') or {}
+                models.append({
+                    "model_available": status.get('model_available'),
+                    "current_version": status.get('current_version'),
+                    "failure_count": status.get('failure_count'),
+                    "feature_count": model_info.get('feature_count'),
+                })
+            except Exception as e:
+                logger.debug(f"model status fetch failed: {e}")
+
+        # Read artifacts index for per-symbol info
+        index_path = Path(self.artifacts_dir) / "index.yaml"
+        artifacts_summary: List[Dict[str, Any]] = []
+        if index_path.exists():
+            try:
+                with open(index_path, "r", encoding="utf-8") as fh:
+                    index_data = yaml.safe_load(fh) or {}
+                model_map = index_data.get("models", index_data)
+                for symbol, folder in model_map.items():
+                    artifact_dir = Path(self.artifacts_dir) / folder
+                    metadata_path = artifact_dir / "metadata.json"
+                    thresholds_path = artifact_dir / "thresholds.yaml"
+                    metadata = {}
+                    thresholds = {}
+                    if metadata_path.exists():
+                        try:
+                            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                        except Exception:
+                            metadata = {}
+                    if thresholds_path.exists():
+                        try:
+                            thresholds = yaml.safe_load(thresholds_path.read_text()) or {}
+                        except Exception:
+                            thresholds = {}
+                    artifacts_summary.append({
+                        "symbol": symbol,
+                        "folder": folder,
+                        "model_version": metadata.get("model_version") or metadata.get("export_timestamp"),
+                        "export_timestamp": metadata.get("export_timestamp"),
+                        "feature_count": metadata.get("input_features"),
+                        "thresholds": {
+                            "buy": thresholds.get("buy_threshold"),
+                            "sell": thresholds.get("sell_threshold"),
+                            "confidence": thresholds.get("confidence_threshold"),
+                        },
+                        "latest_prediction_latency_ms": (self._last_ml_latency[-1] if self._last_ml_latency else None)
+                    })
+            except Exception as e:
+                logger.debug(f"index.yaml parse failed: {e}")
+
+        return {
+            "ts": ts,
+            "models": models,
+            "artifacts": artifacts_summary,
+            "latency_ms": {
+                "p50": float(np.percentile(self._last_ml_latency, 50)) if (NUMPY_AVAILABLE and self._last_ml_latency) else None,
+                "p95": float(np.percentile(self._last_ml_latency, 95)) if (NUMPY_AVAILABLE and self._last_ml_latency) else None,
+                "max": max(self._last_ml_latency) if self._last_ml_latency else None,
+                "samples": len(self._last_ml_latency),
+            }
+        }
+
+    def _build_signal_quality_payload(self, ts: str) -> Dict[str, Any]:
+        recent = self._recent_signals[-self._max_signals:]
+        by_symbol: Dict[str, Dict[str, Any]] = {}
+        for sig in recent:
+            sym = sig.get("symbol")
+            bucket = by_symbol.setdefault(sym, {"count": 0, "ml_count": 0, "avg_confidence": 0.0})
+            bucket["count"] += 1
+            if sig.get("ml"):
+                bucket["ml_count"] += 1
+            bucket["avg_confidence"] += sig.get("confidence", 0.0)
+        for sym, stats in by_symbol.items():
+            count = stats["count"] or 1
+            stats["avg_confidence"] = stats["avg_confidence"] / count
+            stats["ml_ratio"] = stats["ml_count"] / count
+
+        signal_types = Counter(sig.get("strategy") for sig in recent)
+        sides = Counter(sig.get("side") for sig in recent)
+
+        regime_status = {}
+        try:
+            regime_status = self.regime_filter.get_regime_status()
+        except Exception:
+            regime_status = {}
+
+        return {
+            "ts": ts,
+            "recent_signals": recent,
+            "summary": {
+                "total": len(recent),
+                "by_symbol": by_symbol,
+                "by_strategy": signal_types,
+                "sides": sides,
+                "regime": regime_status,
+            }
+        }
+
+    def _build_market_overview_payload(self, ts: str) -> Dict[str, Any]:
+        summary = {
+            "ts": ts,
+            "universe": list(self.current_universe),
+            "top_movers": [],
+            "volumes": {},
+        }
+        try:
+            for symbol in self.current_universe:
+                df = self._get_cached_data(symbol, days=7)
+                if df is None or df.empty:
+                    continue
+                last_close = float(df['close'].iloc[-1])
+                first_close = float(df['close'].iloc[0])
+                change_pct = (last_close - first_close) / first_close if first_close else 0.0
+                summary["top_movers"].append({
+                    "symbol": symbol,
+                    "change_pct": change_pct,
+                    "last_close": last_close
+                })
+                summary["volumes"][symbol] = float(df['volume'].tail(24).sum())
+            summary["top_movers"] = sorted(summary["top_movers"], key=lambda x: x['change_pct'], reverse=True)[:5]
+        except Exception as e:
+            logger.debug(f"market overview build failed: {e}")
+        return summary
+
+    def _build_risk_metrics_payload(self, ts: str) -> Dict[str, Any]:
+        metrics = self.risk_manager.get_risk_metrics()
+        portfolio = self.risk_manager.get_portfolio_status()
+        open_positions = [
+            {
+                "symbol": sym,
+                "side": pos.side,
+                "qty": pos.size,
+                "entry_price": pos.entry_price,
+                "pnl_eur": float(getattr(pos, 'pnl', 0.0)),
+                "pnl_pct": float(getattr(pos, 'pnl_pct', 0.0))
+            }
+            for sym, pos in self.risk_manager.positions.items()
+        ]
+
+        return {
+            "ts": ts,
+            "portfolio": {
+                "total_value": portfolio.total_value,
+                "cash": portfolio.cash,
+                "total_pnl": portfolio.total_pnl,
+                "pnl_pct": portfolio.pnl_pct,
+                "max_drawdown": portfolio.max_drawdown,
+            },
+            "metrics": metrics,
+            "open_positions": open_positions,
+            "open_trades": list(self._open_trades.keys())
+        }
+
+
     def _map_universe_config(self, cfg_obj):
         """Map core.config.UniverseConfig naar filters.universe_selector.UniverseConfig"""
         try:
@@ -1004,6 +1414,12 @@ class TradingBotV4WithML:
         self.scheduler.add_task('snapshot_equity_24h', self._snapshot_equity_24h_task, '5m')
         self.scheduler.add_task('snapshot_performance', self._snapshot_performance_summary_task, '15m')
         self.scheduler.add_task('portfolio_stream_append', self._append_portfolio_jsonl_task, '5m')
+        self.scheduler.add_task('snapshot_ml_overview', self._snapshot_ml_overview, '5m')
+        self.scheduler.add_task('snapshot_signal_overview', self._snapshot_signal_overview, '5m')
+        self.scheduler.add_task('snapshot_market_overview', self._snapshot_market_overview, '15m')
+        self.scheduler.add_task('snapshot_risk_metrics', self._snapshot_risk_metrics, '5m')
+        self.scheduler.add_task('snapshot_alerts', self._snapshot_alerts, '1m')
+        self.scheduler.add_task('snapshot_opportunities', self._snapshot_opportunities, '1m')
         
         # Start scheduler
         self.scheduler.start()
@@ -1016,6 +1432,12 @@ class TradingBotV4WithML:
             self._snapshot_health_task()
             self._snapshot_equity_24h_task()
             self._snapshot_performance_summary_task()
+            self._snapshot_ml_overview()
+            self._snapshot_signal_overview()
+            self._snapshot_market_overview()
+            self._snapshot_risk_metrics()
+            self._snapshot_alerts()
+            self._snapshot_opportunities()
         except Exception as e:
             logger.debug(f"initial snapshots failed: {e}")
         

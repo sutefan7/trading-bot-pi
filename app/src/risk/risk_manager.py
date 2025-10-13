@@ -38,6 +38,7 @@ class Portfolio:
     pnl_pct: float
     max_drawdown: float
     sharpe_ratio: float
+    daily_pnl: float = 0.0
 
 
 class RiskManager:
@@ -70,6 +71,12 @@ class RiskManager:
         self.peak_balance = self.initial_balance
         self.daily_pnl = 0.0
         self.last_reset_date = datetime.now().date()
+        self.trade_history: List[Dict[str, Any]] = []
+        self.win_trades = 0
+        self.loss_trades = 0
+        self.total_trades = 0
+        self.gross_profit = 0.0
+        self.gross_loss = 0.0
         
     def reset_daily_metrics(self):
         """Reset dagelijkse metrics"""
@@ -433,6 +440,7 @@ class RiskManager:
     def _close_position(self, symbol: str, current_price: float, reason: str) -> Dict[str, Any]:
         """Sluit positie"""
         position = self.positions[symbol]
+        close_time = datetime.now()
         
         # Bereken exit waarde
         exit_value = position.size * current_price
@@ -458,15 +466,41 @@ class RiskManager:
         
         logger.info(f"Positie gesloten: {symbol} @ {current_price:.2f}, P&L: {pnl:.2f}, reden: {reason}")
         
+        # Update trade stats
+        trade_record = {
+            'symbol': symbol,
+            'side': position.side,
+            'entry_price': position.entry_price,
+            'exit_price': current_price,
+            'size': position.size,
+            'pnl': pnl,
+            'pnl_pct': pnl / (position.entry_price * position.size),
+            'reason': reason,
+            'entry_time': position.entry_time,
+            'exit_time': close_time,
+            'duration': close_time - position.entry_time
+        }
+        self.trade_history.append(trade_record)
+        self.total_trades += 1
+        if pnl >= 0:
+            self.win_trades += 1
+            self.gross_profit += pnl
+        else:
+            self.loss_trades += 1
+            self.gross_loss += abs(pnl)
+
         return {
             'symbol': symbol,
             'side': position.side,
             'entry_price': position.entry_price,
             'exit_price': current_price,
+            'size': position.size,
+            'entry_time': position.entry_time,
+            'exit_time': close_time,
             'pnl': pnl,
             'pnl_pct': pnl / (position.entry_price * position.size),
             'reason': reason,
-            'duration': datetime.now() - position.entry_time
+            'duration': close_time - position.entry_time
         }
     
     def _calculate_positions_value(self, current_price: float) -> float:
@@ -556,7 +590,8 @@ class RiskManager:
             total_pnl=total_pnl,
             pnl_pct=pnl_pct,
             max_drawdown=max_dd,
-            sharpe_ratio=sharpe
+            sharpe_ratio=sharpe,
+            daily_pnl=self.daily_pnl
         )
         
         self.portfolio_history.append(portfolio)
@@ -572,6 +607,10 @@ class RiskManager:
         
         # Correlation risk (vereenvoudigd)
         correlation_risk = len(self.positions) / self.max_positions
+
+        # Win rate and trade stats
+        win_rate = (self.win_trades / self.total_trades) if self.total_trades else 0.0
+        profit_factor = (self.gross_profit / self.gross_loss) if self.gross_loss > 0 else None
         
         return {
             'current_drawdown': portfolio.max_drawdown,
@@ -581,7 +620,18 @@ class RiskManager:
             'open_positions': len(self.positions),
             'max_positions': self.max_positions,
             'correlation_risk': correlation_risk,
-            'cash_ratio': portfolio.cash / portfolio.total_value if portfolio.total_value > 0 else 1.0
+            'cash_ratio': portfolio.cash / portfolio.total_value if portfolio.total_value > 0 else 1.0,
+            'win_rate': win_rate,
+            'total_trades': self.total_trades,
+            'profit_factor': profit_factor,
+            'gross_profit': self.gross_profit,
+            'gross_loss': self.gross_loss,
+            'wins': self.win_trades,
+            'losses': self.loss_trades,
+            'daily_pnl': self.daily_pnl,
+            'total_pnl': portfolio.total_pnl,
+            'cash': portfolio.cash,
+            'sharpe_ratio': portfolio.sharpe_ratio
         }
     
     def emergency_close_all(self, current_prices: Dict[str, float]) -> List[Dict[str, Any]]:
