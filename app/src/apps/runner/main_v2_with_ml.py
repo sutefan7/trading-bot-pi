@@ -7,10 +7,11 @@ import os
 import time
 import schedule
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from pathlib import Path
 import pandas as pd
 import requests
+import shutil
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -20,6 +21,7 @@ from data.data_manager import DataManager
 from strategies.indicators import TechnicalIndicators
 from risk.risk_manager import RiskManager
 from utils.logger_setup import setup_logging
+from utils.reporting import ReportWriter, utc_now_iso
 from loguru import logger
 
 # Existing modules
@@ -95,7 +97,19 @@ class TradingBotV4WithML:
                 self._refresh_symbols_from_index()
             except Exception as e:
                 logger.warning(f"Kon trading symbols niet verversen vanuit index: {e}")
+
+        # Reporting setup
+        reports_base = Path("storage/reports")
+        self.reporter = ReportWriter(reports_base)
+        self.reporter.ensure_paths()
+        self.reporter.write_schema_once()
         
+        # Runtime state for reporting
+        self._started_at: Optional[datetime] = None
+        self._last_opportunities: List[Dict[str, Any]] = []
+        self._alerts: List[Dict[str, Any]] = []
+        self._recent_signals: List[Dict[str, Any]] = []
+
         logger.info("✅ Trading Bot v4 (ML-enabled) succesvol geïnitialiseerd")
     
     def _init_components(self):
@@ -349,6 +363,9 @@ class TradingBotV4WithML:
             
             # Stap 6: Log status
             self._log_status()
+
+            # Write lightweight snapshots
+            self._write_snapshots()
             
             self.last_update = datetime.now()
             
@@ -654,6 +671,24 @@ class TradingBotV4WithML:
                 
                 result = self.executor.maybe_execute(symbol, signal, bar_ts)
                 if result:
+                    # Append trade JSONL
+                    try:
+                        self.reporter.append_jsonl("trades", {
+                            "ts": utc_now_iso(),
+                            "trade_id": str(result.get('order_id')),
+                            "symbol": result.get('symbol'),
+                            "side": result.get('side'),
+                            "qty": result.get('size'),
+                            "price_eur": result.get('entry_price'),
+                            "fee_eur": 0.0,
+                            "status": "filled",
+                            "pnl_eur": 0.0,
+                            "model_id": None,
+                            "model_ver": result.get('model_version'),
+                            "tags": ["signal:" + result.get('strategy', 'unknown')],
+                        })
+                    except Exception as le:
+                        logger.debug(f"trade jsonl append failed: {le}")
                     signal_type = "ML" if signal.get('ml_enhanced', False) else "Non-ML"
                     logger.info(f"✅ {signal_type} trade uitgevoerd: {symbol} {signal['side']} @ {signal['entry']:.4f}")
                 else:
@@ -767,9 +802,161 @@ class TradingBotV4WithML:
                 logger.info(f"  🤖 ML: {'Actief' if ml_available else 'Inactief'} (v{ml_version})")
             else:
                 logger.info(f"  🤖 ML: Uitgeschakeld")
-            
+ 
         except Exception as e:
             logger.error(f"Fout bij status logging: {e}")
+
+    def _write_snapshots(self):
+        """Schrijf snapshots volgens Pi logging v1."""
+        try:
+            ts = utc_now_iso()
+            # Portfolio snapshot
+            portfolio = self.risk_manager.get_portfolio_status()
+            positions = []
+            total_value = portfolio.total_value if portfolio.total_value > 0 else 1.0
+            for sym, pos in self.risk_manager.positions.items():
+                try:
+                    position_value = pos.size * pos.entry_price
+                except Exception:
+                    position_value = 0.0
+                positions.append({
+                    "symbol": sym,
+                    "side": pos.side,
+                    "qty": pos.size,
+                    "avg_price_eur": pos.entry_price,
+                    "pnl_eur": float(getattr(pos, 'pnl', 0.0)),
+                    "balance_eur": portfolio.total_value,
+                    "weight_pct": float(position_value / total_value),
+                })
+            self.reporter.write_snapshot("portfolio.json", {
+                "ts": ts,
+                "balance_eur": portfolio.total_value,
+                "pnl_eur": portfolio.total_pnl,
+                "realized_pnl_eur": getattr(portfolio, 'realized_pnl', 0.0),
+                "unrealized_pnl_eur": getattr(portfolio, 'unrealized_pnl', portfolio.total_pnl),
+                "open_positions": len(self.risk_manager.positions),
+                "positions": positions,
+            })
+        except Exception as e:
+            logger.warning(f"Snapshot write failed: {e}")
+
+    # ---- Reporting periodic tasks ----
+    def _snapshot_bot_status_task(self):
+        try:
+            ts = utc_now_iso()
+            uptime = None
+            if hasattr(self, 'is_running') and self.is_running and self.last_update:
+                uptime = int((datetime.now() - self.last_update).total_seconds())
+            self.reporter.write_snapshot("bot_status.json", {
+                "ts": ts,
+                "pi_online": True,
+                "bot_running": self.is_running,
+                "service_mode": "paper" if self.live_config.paper_trading else "live",
+                "uptime": uptime,
+                "last_decision_at": None,
+                "recent_logs": []
+            })
+        except Exception as e:
+            logger.debug(f"bot_status snapshot failed: {e}")
+
+    def _snapshot_health_task(self):
+        try:
+            ts = utc_now_iso()
+            # CPU approx using loadavg / cores
+            try:
+                la1, _, _ = os.getloadavg()
+                cores = max(1, os.cpu_count() or 1)
+                cpu_pct = min(1.0, la1 / cores)
+            except Exception:
+                cpu_pct = 0.0
+            # Mem
+            try:
+                with open('/proc/meminfo', 'r') as f:
+                    meminfo = f.read()
+                mem_total = 1.0
+                mem_free = 0.0
+                for line in meminfo.splitlines():
+                    if line.startswith('MemTotal:'):
+                        mem_total = float(line.split()[1])
+                    if line.startswith('MemAvailable:'):
+                        mem_free = float(line.split()[1])
+                mem_pct = 1.0 - (mem_free / mem_total if mem_total else 0.0)
+            except Exception:
+                mem_pct = 0.0
+            # Disk
+            try:
+                usage = shutil.disk_usage('/')
+                disk_pct = usage.used / usage.total
+            except Exception:
+                disk_pct = 0.0
+            # Data freshness
+            try:
+                last = self.data_scheduler.last_update
+                freshness = None
+                if '1h' in last and last['1h']:
+                    freshness = int((datetime.now() - last['1h']).total_seconds() / 60)
+                data_freshness_min = freshness
+            except Exception:
+                data_freshness_min = None
+            self.reporter.write_snapshot("health.json", {
+                "ts": ts,
+                "cpu_pct": cpu_pct,
+                "mem_pct": mem_pct,
+                "disk_pct": disk_pct,
+                "data_freshness_min": data_freshness_min,
+                "errors_24h": 0
+            })
+        except Exception as e:
+            logger.debug(f"health snapshot failed: {e}")
+
+    def _snapshot_equity_24h_task(self):
+        try:
+            ts = utc_now_iso()
+            # Ensure portfolio history is updated
+            portfolio = self.risk_manager.get_portfolio_status()
+            # Build last ~24h points (limit to last 288 entries)
+            points = []
+            for p in self.risk_manager.portfolio_history[-288:]:
+                points.append({
+                    "t": ts,
+                    "balance_eur": p.total_value,
+                    "pnl_eur": p.total_pnl
+                })
+            self.reporter.write_snapshot("equity_24h.json", {"ts": ts, "points": points})
+        except Exception as e:
+            logger.debug(f"equity_24h snapshot failed: {e}")
+
+    def _snapshot_performance_summary_task(self):
+        try:
+            ts = utc_now_iso()
+            portfolio = self.risk_manager.get_portfolio_status()
+            self.reporter.write_snapshot("performance_summary.json", {
+                "ts": ts,
+                "win_rate": 0.0,
+                "sharpe": 0.0,
+                "max_drawdown": portfolio.max_drawdown,
+                "profit_factor": 0.0,
+                "total_trades": 0,
+                "period": "24h"
+            })
+        except Exception as e:
+            logger.debug(f"performance_summary snapshot failed: {e}")
+
+    def _append_portfolio_jsonl_task(self):
+        try:
+            ts = utc_now_iso()
+            metrics = self.risk_manager.get_risk_metrics()
+            portfolio = self.risk_manager.get_portfolio_status()
+            self.reporter.append_jsonl("portfolio_snapshots", {
+                "ts": ts,
+                "balance_eur": portfolio.total_value,
+                "pnl_eur": portfolio.total_pnl,
+                "drawdown_pct": metrics.get('current_drawdown', 0.0),
+                "open_positions": metrics.get('open_positions', 0),
+                "metrics": {"win_rate": 0.0, "sharpe": 0.0, "profit_factor": 0.0}
+            })
+        except Exception as e:
+            logger.debug(f"portfolio jsonl append failed: {e}")
     
     def _map_universe_config(self, cfg_obj):
         """Map core.config.UniverseConfig naar filters.universe_selector.UniverseConfig"""
@@ -810,12 +997,27 @@ class TradingBotV4WithML:
             self.run_trading_cycle,
             f"{self.live_config.cooldown_bars}h"
         )
+
+        # Reporting tasks (per specificatie)
+        self.scheduler.add_task('snapshot_bot_status', self._snapshot_bot_status_task, '1m')
+        self.scheduler.add_task('snapshot_health', self._snapshot_health_task, '1m')
+        self.scheduler.add_task('snapshot_equity_24h', self._snapshot_equity_24h_task, '5m')
+        self.scheduler.add_task('snapshot_performance', self._snapshot_performance_summary_task, '15m')
+        self.scheduler.add_task('portfolio_stream_append', self._append_portfolio_jsonl_task, '5m')
         
         # Start scheduler
         self.scheduler.start()
         
         # Eerste cycle direct uitvoeren
         self.run_trading_cycle()
+        # Directe snapshots bij start
+        try:
+            self._snapshot_bot_status_task()
+            self._snapshot_health_task()
+            self._snapshot_equity_24h_task()
+            self._snapshot_performance_summary_task()
+        except Exception as e:
+            logger.debug(f"initial snapshots failed: {e}")
         
         # Loop voor geplande cycles
         while self.is_running:
