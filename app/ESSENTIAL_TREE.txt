@@ -74,7 +74,7 @@ trading-bot-pi-clean/
 │
 ├── 🔧 BELANGRIJK (Voor systemd auto-start)
 │   │
-│   ├── tradingbot-pi.service                   🔧 Systemd service
+│   ├── trading-bot-pi.service                  🔧 Systemd service
 │   └── inference.service                       🔧 Optioneel
 │
 ├── 📚 HULPVOL (Documentatie - niet nodig voor draaien)
@@ -146,6 +146,6 @@ MINIMAAL VOOR DEPLOYMENT:
 ✅ requirements/requirements.txt
 ✅ venv/ (installed)
 ✅ storage/artifacts/ (met models als ML enabled)
-✅ /etc/systemd/system/tradingbot-pi.service
+✅ /etc/systemd/system/trading-bot-pi.service
 
 TOTAAL: ~250-300MB

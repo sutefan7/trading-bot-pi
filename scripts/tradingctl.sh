@@ -2,8 +2,9 @@
 
 set -euo pipefail
 
-SERVICE="tradingbot-pi.service"
-PI_ARTIFACT_ROOT="/home/stephang/trading-bot-pi-clean/storage/artifacts"
+SERVICE="trading-bot-pi.service"
+PI_DEPLOY_ROOT="/srv/trading-bot-pi/app"
+PI_ARTIFACT_ROOT="${PI_DEPLOY_ROOT}/storage/artifacts"
 CUR_LINK="${PI_ARTIFACT_ROOT}/current"
 
 abort() {
@@ -47,7 +48,8 @@ except ImportError as exc:
     sys.exit(2)
 
 tag = os.environ.get("TAG")
-base = "/home/stephang/trading-bot-pi-clean/storage/artifacts"
+# Keep in sync with PI_ARTIFACT_ROOT above.
+base = "/srv/trading-bot-pi/app/storage/artifacts"
 signature_path = os.path.join(base, "input_signature.json")
 model_path = os.path.join(base, tag, "model.onnx")
 

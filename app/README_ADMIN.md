@@ -5,11 +5,11 @@
 - trader: service user. Runs the systemd service; no sudo.
 
 ## Service
-- Start: sudo systemctl start tradingbot-pi
-- Stop: sudo systemctl stop tradingbot-pi
-- Restart: sudo systemctl restart tradingbot-pi
-- Status: sudo systemctl status tradingbot-pi
-- Logs (live): journalctl -u tradingbot-pi -f
+- Start: sudo systemctl start trading-bot-pi
+- Stop: sudo systemctl stop trading-bot-pi
+- Restart: sudo systemctl restart trading-bot-pi
+- Status: sudo systemctl status trading-bot-pi
+- Logs (live): journalctl -u trading-bot-pi -f
 
 ## Paths
 - Working dir (service): /srv/trading-bot-pi/app
@@ -23,21 +23,21 @@
 ```bash
 cd /srv/trading-bot-pi/app
 # edit/pull as stephang
-sudo systemctl restart tradingbot-pi
+sudo systemctl restart trading-bot-pi
 ```
 
 ## Update Model
 ```bash
 # copy new model dir under app/storage/artifacts/
 echo "<model_dir_name>" > app/storage/artifacts/latest.txt
-sudo systemctl restart tradingbot-pi
+sudo systemctl restart trading-bot-pi
 ```
 
 ## Troubleshooting
 - Service won't start:
   - Check venv: ls -la app/.venv/bin/python3
   - Permissions: trader must read+exec venv, write app/logs
-  - journalctl -u tradingbot-pi -e
+  - journalctl -u trading-bot-pi -e
 - No data errors:
   - Verify symbols/timeframes in app/config.yaml
   - Network check: curl https://api.kraken.com/0/public/Time

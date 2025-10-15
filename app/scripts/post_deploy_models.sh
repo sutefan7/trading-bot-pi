@@ -12,7 +12,7 @@ APP_DIR="/srv/trading-bot-pi/app"
 ART_DIR="$APP_DIR/storage/artifacts"
 INDEX_FILE="$ART_DIR/index.yaml"
 CONFIG_FILE="$APP_DIR/config.yaml"
-SERVICE_NAME="tradingbot-pi"
+SERVICE_NAME="trading-bot-pi"
 PYTHON_BIN="$APP_DIR/.venv/bin/python3"
 
 echo "[+] Scanning bundles in $ART_DIR"

@@ -1,8 +1,8 @@
 # Trading Bot Pi (ML Runner)
 - ML-consumer (ONNX) + execution voor Pi
-- Start: systemd `tradingbot-pi.service` → `src/apps/runner/main_v2_with_ml.py --non-interactive`
+- Start: systemd `trading-bot-pi.service` → `src/apps/runner/main_v2_with_ml.py --non-interactive`
 - Config: `config.yaml` (ml_overlay.artifacts_dir/latest_file naar ONNX)
-- Logs: `journalctl -u tradingbot-pi -f`
+- Logs: `journalctl -u trading-bot-pi -f`
 
 ## Pi-lightweight policy
 
@@ -36,7 +36,7 @@ CLI voor beheer onder `/home/stephang/trading-bot-pi-clean/scripts/tradingctl.sh
 - Warm-up fout → waarschijnlijk signature/model mismatch; check `input_signature.json`.
 - Checksum mismatch → sync opnieuw of valideer manifest.
 - RAM guard → vrij geheugen door modellen/logs op te ruimen.
-- Review logs via `./scripts/tradingctl.sh logs` of `journalctl -u tradingbot-pi -f`.
+- Review logs via `./scripts/tradingctl.sh logs` of `journalctl -u trading-bot-pi -f`.
 
 ## ✅ Policy Safelist (Examples Only)
 
