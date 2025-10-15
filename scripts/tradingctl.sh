@@ -5,6 +5,7 @@ set -euo pipefail
 SERVICE="trading-bot-pi.service"
 PI_DEPLOY_ROOT="/srv/trading-bot-pi/app"
 PI_ARTIFACT_ROOT="${PI_DEPLOY_ROOT}/storage/artifacts"
+PYTHON_BIN="${PYTHON_BIN:-/srv/trading-bot-pi/app/.venv/bin/python3}"
 CUR_LINK="${PI_ARTIFACT_ROOT}/current"
 
 abort() {
@@ -16,6 +17,7 @@ require_cmd() {
   for cmd in "$@"; do
     command -v "$cmd" >/dev/null 2>&1 || abort "Command not found: $cmd"
   done
+  [[ -x "$PYTHON_BIN" ]] || abort "Python interpreter not found or not executable: $PYTHON_BIN"
 }
 
 ram_guard() {
@@ -35,7 +37,7 @@ verify_checksum() {
 
 warmup_model() {
   local tag=$1
-  TAG="$tag" python3 - <<'PY'
+  TAG="$tag" "$PYTHON_BIN" - <<'PY'
 import json
 import os
 import sys
@@ -85,6 +87,7 @@ PY
 dry_run_warmup() {
   local tag=$1
   echo "[INFO] Performing warm-up dry-run for tag $tag"
+  echo "[INFO] Using Python interpreter: ${PYTHON_BIN}"
   if warmup_model "$tag"; then
     echo "[INFO] Warm-up dry-run succeeded, proceeding to deployment."
   else
@@ -110,7 +113,7 @@ rollback() {
 }
 
 main() {
-  require_cmd awk sha256sum python3 systemctl journalctl
+  require_cmd awk sha256sum systemctl journalctl
 
   local cmd=${1:-}
   case "$cmd" in
