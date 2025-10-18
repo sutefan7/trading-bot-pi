@@ -5,7 +5,7 @@ set -euo pipefail
 SERVICE="trading-bot-pi.service"
 PI_DEPLOY_ROOT="/srv/trading-bot-pi/app"
 PI_ARTIFACT_ROOT="${PI_DEPLOY_ROOT}/storage/artifacts"
-PYTHON_BIN="${PYTHON_BIN:-/srv/trading-bot-pi/app/.venv/bin/python3}"
+PYTHON_BIN="${PYTHON_BIN:-/home/stephang/venv-pi/bin/python3}"
 CUR_LINK="${PI_ARTIFACT_ROOT}/current"
 
 abort() {
@@ -144,4 +144,3 @@ main() {
 }
 
 main "$@"
-
