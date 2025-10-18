@@ -87,6 +87,7 @@ PY
 dry_run_warmup() {
   local tag=$1
   echo "[INFO] Performing warm-up dry-run for tag $tag"
+  echo "[INFO] Using Python interpreter: ${PYTHON_BIN}"
   if warmup_model "$tag"; then
     echo "[INFO] Warm-up dry-run succeeded, proceeding to deployment."
   else

@@ -17,7 +17,7 @@ ExecStartPre=/usr/bin/python3 -c 'import requests; requests.get("https://api.kra
 ExecStartPre=/bin/bash -c 'test -f /srv/trading-bot-pi/app/storage/artifacts/latest.txt || true'
 
 # Main service (ML-enabled)
-ExecStart=/bin/bash -lc 'PYTHONPATH=/srv/trading-bot-pi/app python3 src/apps/runner/main_v2_with_ml.py --non-interactive'
+ExecStart=/bin/bash -lc 'source /srv/trading-bot-pi/app/.venv/bin/activate && PYTHONPATH=/srv/trading-bot-pi/app python3 src/apps/runner/main_v2_with_ml.py --non-interactive'
 
 # Restart policy with limits
 Restart=on-failure
@@ -29,6 +29,7 @@ StartLimitBurst=3
 Environment="PYTHONUNBUFFERED=1"
 Environment="PYTHONPATH=/srv/trading-bot-pi/app"
 Environment="TRADING_BOT_ENV=production"
+Environment="PATH=/srv/trading-bot-pi/app/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 # Logging
 StandardOutput=journal
