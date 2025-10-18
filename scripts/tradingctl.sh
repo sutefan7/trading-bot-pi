@@ -7,6 +7,7 @@ PI_DEPLOY_ROOT="/srv/trading-bot-pi/app"
 PI_ARTIFACT_ROOT="${PI_DEPLOY_ROOT}/storage/artifacts"
 PYTHON_BIN="${PYTHON_BIN:-/home/stephang/venv-pi/bin/python3}"
 CUR_LINK="${PI_ARTIFACT_ROOT}/current"
+LATEST_FILE="${PI_DEPLOY_ROOT}/latest.txt"
 
 abort() {
   echo "[ERROR] $*" >&2
@@ -18,6 +19,23 @@ require_cmd() {
     command -v "$cmd" >/dev/null 2>&1 || abort "Command not found: $cmd"
   done
   [[ -x "$PYTHON_BIN" ]] || abort "Python interpreter not found or not executable: $PYTHON_BIN"
+}
+
+resolve_tag() {
+  local requested="${1:-}"
+  if [[ -n "$requested" && "$requested" != "latest" ]]; then
+    printf '%s\n' "$requested"
+    return 0
+  fi
+
+  [[ -f "$LATEST_FILE" ]] || abort "latest.txt not found: ${LATEST_FILE}"
+  local raw
+  raw=$(<"$LATEST_FILE")
+  raw=${raw//[$'\t\r\n ']/}
+  raw=${raw%/}
+  raw=${raw##*/}
+  [[ -n "$raw" ]] || abort "latest.txt is empty; specify a tag explicitly"
+  printf '%s\n' "$raw"
 }
 
 ram_guard() {
@@ -182,8 +200,8 @@ main() {
   local cmd=${1:-}
   case "$cmd" in
     deploy)
-      local tag=${2:-}
-      [[ -n "$tag" ]] || abort "Usage: tradingctl deploy <TAG>"
+      local tag
+      tag=$(resolve_tag "${2:-}")
       [[ -d "${PI_ARTIFACT_ROOT}/${tag}" ]] || abort "Artifact tag not found: ${PI_ARTIFACT_ROOT}/${tag}"
       ram_guard
       verify_checksum "$tag"
@@ -202,7 +220,7 @@ main() {
       journalctl -u "$SERVICE" -n 200 --no-pager
       ;;
     *)
-      abort "Usage: tradingctl {deploy <TAG>|rollback <PREV_TAG>|status|logs}"
+      abort "Usage: tradingctl {deploy [<TAG>|latest]|rollback <PREV_TAG>|status|logs}"
       ;;
   esac
 }
