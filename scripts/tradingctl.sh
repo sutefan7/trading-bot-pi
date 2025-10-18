@@ -30,9 +30,22 @@ ram_guard() {
 
 verify_checksum() {
   local tag=$1
-  local manifest="${PI_ARTIFACT_ROOT}/${tag}/sha256sum.txt"
-  [[ -f "$manifest" ]] || abort "Checksum manifest not found: $manifest"
-  (cd "${PI_ARTIFACT_ROOT}/${tag}" && sha256sum --check sha256sum.txt)
+  local target="${PI_ARTIFACT_ROOT}/${tag}"
+  [[ -d "$target" ]] || abort "Artifact tag not found: $target"
+
+  local manifests=()
+  while IFS= read -r -d '' file; do
+    manifests+=("$file")
+  done < <(find "$target" -type f -name 'sha256sum.txt' -print0)
+
+  [[ ${#manifests[@]} -gt 0 ]] || abort "No checksum manifests found under: $target"
+
+  for manifest in "${manifests[@]}"; do
+    local dir
+    dir=$(dirname "$manifest")
+    echo "[INFO] Verifying checksums in ${dir#${PI_ARTIFACT_ROOT}/}"
+    (cd "$dir" && sha256sum --check sha256sum.txt)
+  done
 }
 
 warmup_model() {
