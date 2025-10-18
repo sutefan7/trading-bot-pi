@@ -1,0 +1,7 @@
+{
+  "coin": "SEI_USD",
+  "model_type": "XGBClassifier",
+  "export_timestamp": "20251017_0939",
+  "input_features": 34,
+  "format": "ONNX"
+}

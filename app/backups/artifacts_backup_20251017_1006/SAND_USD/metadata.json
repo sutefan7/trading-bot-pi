@@ -1,0 +1,7 @@
+{
+  "coin": "SAND_USD",
+  "model_type": "RandomForestClassifier",
+  "export_timestamp": "20251017_0939",
+  "input_features": 34,
+  "format": "ONNX"
+}

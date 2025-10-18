@@ -1,0 +1,7 @@
+{
+  "coin": "WLFI_USD",
+  "model_type": "LGBMClassifier",
+  "export_timestamp": "20251008_2044",
+  "input_features": 34,
+  "format": "ONNX"
+}

@@ -1,0 +1,7 @@
+{
+  "coin": "XMR_USD",
+  "model_type": "RandomForestClassifier",
+  "export_timestamp": "20251017_1634",
+  "input_features": 34,
+  "format": "ONNX"
+}

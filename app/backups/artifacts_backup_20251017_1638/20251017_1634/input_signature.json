@@ -1,0 +1,10 @@
+{
+  "features": {
+    "dtype": "float32",
+    "shape": [
+      1,
+      32
+    ],
+    "description": "Placeholder signature; ensure actual signature generated during export"
+  }
+}
