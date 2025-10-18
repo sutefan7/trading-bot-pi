@@ -65,12 +65,24 @@ except ImportError as exc:
 tag = os.environ.get("TAG")
 # Keep in sync with PI_ARTIFACT_ROOT above.
 base = "/srv/trading-bot-pi/app/storage/artifacts"
-signature_path = os.path.join(base, "input_signature.json")
+signature_path = os.path.join(base, tag, "input_signature.json")
 model_path = os.path.join(base, tag, "model.onnx")
 
 if not os.path.isfile(signature_path):
+    signature_path = os.path.join(base, tag, "input_signature.json")
+if not os.path.isfile(signature_path):
+    signature_path = os.path.join(base, "input_signature.json")
+if not os.path.isfile(signature_path):
     sys.stderr.write(f"[ERROR] Missing input signature: {signature_path}\n")
     sys.exit(3)
+
+if not os.path.isfile(model_path):
+    import glob
+    matches = glob.glob(os.path.join(base, tag, "*", "model.onnx"))
+    for candidate in matches:
+        if os.path.isfile(candidate):
+            model_path = candidate
+            break
 if not os.path.isfile(model_path):
     sys.stderr.write(f"[ERROR] Missing model file: {model_path}\n")
     sys.exit(4)
@@ -78,21 +90,60 @@ if not os.path.isfile(model_path):
 with open(signature_path, "r", encoding="utf-8") as fh:
     signature = json.load(fh)
 
-dummy_inputs = {}
-for name, meta in signature.items():
-    shape = meta.get("shape")
-    dtype = meta.get("dtype", "float32")
-    if not shape:
-        sys.stderr.write(f"[ERROR] Signature for {name} missing shape\n")
-        sys.exit(5)
-    try:
-        dummy_inputs[name] = np.zeros(shape, dtype=dtype)
-    except Exception as exc:
-        sys.stderr.write(f"[ERROR] Failed to build dummy input {name}: {exc}\n")
-        sys.exit(6)
+if isinstance(signature, dict):
+    signature_map = {name: meta for name, meta in signature.items() if isinstance(meta, dict)}
+else:
+    signature_map = {}
 
 session = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
-session.run(None, dummy_inputs)
+inputs = session.get_inputs()
+feed = {}
+
+def _fallback_shape(meta_list, index):
+    for meta in meta_list:
+        shape = meta.get("shape")
+        if isinstance(shape, list) and index < len(shape):
+            try:
+                val = int(shape[index])
+                if val > 0:
+                    return val
+            except Exception:
+                continue
+    return 1
+
+meta_list = list(signature_map.values())
+
+for idx, inp in enumerate(inputs):
+    meta = signature_map.get(inp.name)
+    if meta is None and idx < len(meta_list):
+        meta = meta_list[idx]
+
+    dtype = "float32"
+    if meta and isinstance(meta.get("dtype"), str):
+        dtype = meta["dtype"]
+
+    try:
+        np_dtype = np.dtype(dtype)
+    except Exception:
+        np_dtype = np.float32
+
+    dims = []
+    if inp.shape:
+        for dim_idx, dim in enumerate(inp.shape):
+            if isinstance(dim, int) and dim > 0:
+                dims.append(int(dim))
+            else:
+                dims.append(_fallback_shape(meta_list if meta_list else ([meta] if meta else []), dim_idx))
+    else:
+        dims = [1]
+
+    try:
+        feed[inp.name] = np.zeros(dims, dtype=np_dtype)
+    except Exception as exc:
+        sys.stderr.write(f"[ERROR] Failed to build dummy input for {inp.name}: {exc}\n")
+        sys.exit(6)
+
+session.run(None, feed)
 print("[OK] Warm-up successful.")
 PY
 }
